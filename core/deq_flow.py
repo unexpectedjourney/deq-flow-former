@@ -3,9 +3,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from update import UpdateBlock
-from extractor import Encoder
-from corr import CorrBlock
+from core.update import UpdateBlock
+from core.extractor import Encoder
+from core.corr import CorrBlock
 from core.utils.utils import coords_grid
 
 from core.gma import Attention
@@ -62,7 +62,7 @@ class DEQFlow(nn.Module):
             self.args.dropout = 0
 
         # feature network, context network, and update block
-        self.fnet = Encoder(output_dim=odim, norm_fn='instance', dropout=args.dropout)        
+        self.fnet = Encoder(output_dim=odim, norm_fn='instance', dropout=args.dropout)
         self.cnet = Encoder(output_dim=cdim, norm_fn='batch', dropout=args.dropout)
         self.update_block = UpdateBlock(self.args, hidden_dim=hdim)
 
@@ -104,7 +104,7 @@ class DEQFlow(nn.Module):
         mask = mask.view(N, 1, 9, 8, 8, H, W)
         mask = torch.softmax(mask, dim=2)
 
-        up_flow = F.unfold(8 * flow, [3,3], padding=1)
+        up_flow = F.unfold(8 * flow, [3, 3], padding=1)
         up_flow = up_flow.view(N, 2, 9, 1, 1, H, W)
 
         up_flow = torch.sum(mask * up_flow, dim=2)

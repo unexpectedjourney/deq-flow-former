@@ -5,7 +5,7 @@ import os
 import time
 from functools import partial
 
-import datasets
+import core.datasets as datasets
 import numpy as np
 import torch
 import torch.nn as nn
@@ -27,6 +27,8 @@ MAX_FLOW = 400
 SUM_FREQ = 100
 VAL_FREQ = 5000
 TIME_FREQ = 500
+
+DEVICE = "cpu"
 
 
 def fixed_point_correction(
@@ -175,7 +177,7 @@ def train_once(args):
         model.load_state_dict(torch.load(restore_path), strict=False)
         print(f'Resume from {restore_path}')
 
-    model.cuda()
+    model.to(DEVICE)
     model.train()
 
     if args.stage != 'chairs' and not args.active_bn:
@@ -200,12 +202,12 @@ def train_once(args):
 
         for i_batch, data_blob in enumerate(train_loader):
             optimizer.zero_grad()
-            image1, image2, flow, valid = [x.cuda() for x in data_blob]
+            image1, image2, flow, valid = [x.to(DEVICE) for x in data_blob]
 
             if args.add_noise:
                 stdv = np.random.uniform(0.0, 5.0)
-                image1 = (image1 + stdv * torch.randn(*image1.shape).cuda()).clamp(0.0, 255.0)
-                image2 = (image2 + stdv * torch.randn(*image2.shape).cuda()).clamp(0.0, 255.0)
+                image1 = (image1 + stdv * torch.randn(*image1.shape).to(DEVICE)).clamp(0.0, 255.0)
+                image2 = (image2 + stdv * torch.randn(*image2.shape).to(DEVICE)).clamp(0.0, 255.0)
 
             start_time = time.time()
 
@@ -308,7 +310,7 @@ def val(args):
         model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
         print(f'Load from {args.restore_ckpt}')
 
-    model.cuda()
+    model.to(DEVICE)
     model.eval()
 
     for val_dataset in args.validation:
@@ -329,7 +331,7 @@ def test(args):
     if args.restore_ckpt is not None:
         model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
 
-    model.cuda()
+    model.to(DEVICE)
     model.eval()
 
     for test_dataset in args.test_set:
@@ -351,7 +353,7 @@ def visualize(args):
     if args.restore_ckpt is not None:
         model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
 
-    model.cuda()
+    model.to(DEVICE)
     model.eval()
 
     for viz_dataset in args.viz_set:
