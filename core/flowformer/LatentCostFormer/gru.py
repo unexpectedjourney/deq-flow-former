@@ -101,11 +101,6 @@ class BasicUpdateBlock(nn.Module):
         self.gru = SepConvGRU(hidden_dim=hidden_dim, input_dim=128+hidden_dim)
         self.flow_head = FlowHead(hidden_dim, hidden_dim=256)
 
-        self.mask = nn.Sequential(
-            nn.Conv2d(128, 256, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 64*9, 1, padding=0))
-
     def forward(self, net, inp, corr, flow, upsample=True):
         motion_features = self.encoder(flow, corr)
         inp = torch.cat([inp, motion_features], dim=1)
@@ -113,9 +108,7 @@ class BasicUpdateBlock(nn.Module):
         net = self.gru(net, inp)
         delta_flow = self.flow_head(net)
 
-        # scale mask to balence gradients
-        mask = .25 * self.mask(net)
-        return net, mask, delta_flow
+        return net, delta_flow
 
 
 class GMAUpdateBlock(nn.Module):
@@ -127,11 +120,7 @@ class GMAUpdateBlock(nn.Module):
                               input_dim=128+hidden_dim+hidden_dim)
         self.flow_head = FlowHead(hidden_dim, hidden_dim=256)
 
-        self.mask = nn.Sequential(
-            nn.Conv2d(128, 256, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 64*9, 1, padding=0))
-
+        
         self.aggregator = Aggregate(
             args=self.args, dim=128, dim_head=128, heads=1)
 
@@ -146,6 +135,4 @@ class GMAUpdateBlock(nn.Module):
 
         delta_flow = self.flow_head(net)
 
-        # scale mask to balence gradients
-        mask = .25 * self.mask(net)
-        return net, mask, delta_flow
+        return net, delta_flow

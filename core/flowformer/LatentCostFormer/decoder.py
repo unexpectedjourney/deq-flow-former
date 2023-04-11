@@ -14,6 +14,10 @@ from timm.models.layers import DropPath
 from .gru import BasicUpdateBlock, GMAUpdateBlock
 from .gma import Attention
 
+from core.deq import get_deq
+from core.deq.norm import apply_weight_norm, reset_weight_norm
+from core.deq.layer_utils import DEQWrapper
+
 
 def initialize_flow(img):
     """ Flow is represented as difference between two means flow = mean1 - mean0"""
@@ -173,13 +177,26 @@ class MemoryDecoder(nn.Module):
         self.proj = nn.Conv2d(256, 256, 1)
         self.depth = cfg.decoder_depth
         self.decoder_layer = MemoryDecoderLayer(dim, cfg)
+        self.mask = nn.Sequential(
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 64*9, 1, padding=0)
+        )
 
         if self.cfg.gma:
             self.update_block = GMAUpdateBlock(self.cfg, hidden_dim=128)
-            self.att = Attention(args=self.cfg, dim=128,
-                                 heads=1, max_pos_size=160, dim_head=128)
+            self.att = Attention(
+                args=self.cfg, dim=128,
+                heads=1, max_pos_size=160, dim_head=128
+            )
         else:
             self.update_block = BasicUpdateBlock(self.cfg, hidden_dim=128)
+
+        if cfg.wnorm:
+            apply_weight_norm(self.update_block)
+
+        DEQ = get_deq(cfg)
+        self.deq = DEQ(cfg)
 
     def upsample_flow(self, flow, mask):
         """ Upsample flow field [H/8, W/8, 2] -> [H, W, 2] using convex combination """
@@ -214,6 +231,13 @@ class MemoryDecoder(nn.Module):
         corr = corr.view(batch, h1, w1, -1).permute(0, 3, 1, 2)
         return corr
 
+    def _decode(self, z_out, coords0):
+        net, coords1, _, _ = z_out
+        up_mask = .25 * self.mask(net)
+        flow_up = self.upsample_flow(coords1 - coords0, up_mask)
+
+        return flow_up
+
     def forward(self, cost_memory, context, data={}, flow_init=None):
         """
             memory: [B*H1*W1, H2'*W2', C]
@@ -226,7 +250,7 @@ class MemoryDecoder(nn.Module):
             #print("[Using warm start]")
             coords1 = coords1 + flow_init
 
-        #flow = coords1
+        # flow = coords1
 
         flow_predictions = []
 
@@ -234,43 +258,58 @@ class MemoryDecoder(nn.Module):
         net, inp = torch.split(context, [128, 128], dim=1)
         net = torch.tanh(net)
         inp = torch.relu(inp)
+
+        attention = None
         if self.cfg.gma:
             attention = self.att(inp)
 
         size = net.shape
         key, value = None, None
 
-        for idx in range(self.depth):
-            coords1 = coords1.detach()
+        if self.cfg.wnorm:
+            reset_weight_norm(self.update_block)  # Reset weights for WN
 
-            cost_forward = self.encode_flow_token(cost_maps, coords1)
+        def func(net, c, k, v):
+            # if not self.args.all_grad:
+            #     c = c.detach()
+            # with autocast(enabled=self.args.mixed_precision):
+            #     new_h, delta_flow = self.update_block(h, inp, corr_fn(c), c-coords0, attn) # corr_fn(coords1) produces the index correlation volumes
+            # new_c = c + delta_flow  # F(t+1) = F(t) + \Delta(t)
+            # return new_h, new_c
+            c = c.detach()
+
+            cost_forward = self.encode_flow_token(cost_maps, c)
             #cost_backward = self.reverse_cost_extractor(cost_maps, coords0, coords1)
 
             query = self.flow_token_encoder(cost_forward)
             query = query.permute(0, 2, 3, 1).contiguous().view(
                 size[0]*size[2]*size[3], 1, self.dim)
-            cost_global, key, value = self.decoder_layer(
-                query, key, value, cost_memory, coords1, size, data['H3W3'])
+            cost_global, new_k, new_v = self.decoder_layer(
+                query, k, v, cost_memory, c, size, data['H3W3'])
+
             if self.cfg.only_global:
                 corr = cost_global
             else:
                 corr = torch.cat([cost_global, cost_forward], dim=1)
 
-            flow = coords1 - coords0
-
-            if self.cfg.gma:
-                net, up_mask, delta_flow = self.update_block(
-                    net, inp, corr, flow, attention)
-            else:
-                net, up_mask, delta_flow = self.update_block(
-                    net, inp, corr, flow)
+            flow = c - coords0
+            new_net, up_mask, delta_flow = self.update_block(
+                net, inp, corr, flow, attention
+            )
 
             # flow = delta_flow
-            coords1 = coords1 + delta_flow
-            flow_up = self.upsample_flow(coords1 - coords0, up_mask)
-            flow_predictions.append(flow_up)
+            new_c = c + delta_flow
+
+            return new_net, new_c, new_k, new_v
+
+        deq_func = DEQWrapper(func, (net, coords1, key, value))
+        z_init = deq_func.list2vec(net, coords1, key, value) # will be merged into self.deq(...)
+        z_out, info = self.deq(deq_func, z_init)
+        flow_predictions = [self._decode(z, coords0) for z in z_out]
 
         if self.training:
             return flow_predictions
         else:
-            return flow_predictions[-1], coords1-coords0
+            flow_pred = flow_predictions[-1]
+            _, coords1, _, _ = z_out[-1]
+            return flow_pred, coords1-coords0
