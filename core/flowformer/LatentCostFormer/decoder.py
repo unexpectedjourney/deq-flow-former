@@ -67,7 +67,8 @@ class CrossAttentionLayer(nn.Module):
         """
         B, _, H1, W1 = query_coord.shape
 
-        if key is None and value is None:
+        # if key is None and value is None:
+        if (key == 0).all() and (value == 0).all():
             key = self.k(memory)
             value = self.v(memory)
 
@@ -110,7 +111,9 @@ class MemoryDecoderLayer(nn.Module):
         query_token_dim, tgt_token_dim = cfg.query_latent_dim, cfg.cost_latent_dim
         qk_dim, v_dim = query_token_dim, query_token_dim
         self.cross_attend = CrossAttentionLayer(
-            qk_dim, v_dim, query_token_dim, tgt_token_dim, add_flow_token=cfg.add_flow_token, dropout=cfg.dropout)
+            qk_dim, v_dim, query_token_dim, tgt_token_dim, 
+            add_flow_token=cfg.add_flow_token, dropout=cfg.dropout
+        )
 
     def forward(self, query, key, value, memory, coords1, size, size_h3w3):
         """
@@ -237,7 +240,7 @@ class MemoryDecoder(nn.Module):
         return corr
 
     def _decode(self, z_out, coords0):
-        net, coords1 = z_out
+        net, coords1, _, _ = z_out
         up_mask = .25 * self.mask(net)
         flow_up = self.upsample_flow(coords1 - coords0, up_mask)
 
@@ -245,7 +248,7 @@ class MemoryDecoder(nn.Module):
 
     def forward(
         self, cost_memory, context, data={}, flow_init=None,
-        cached_result=None,
+        cached_result=None, sradius_mode=False, **kwargs,
     ):
         """
             memory: [B*H1*W1, H2'*W2', C]
@@ -259,8 +262,16 @@ class MemoryDecoder(nn.Module):
         net = torch.tanh(net)
         inp = torch.relu(inp)
 
+        size = net.shape
+        key = torch.zeros(
+            (size[0], size[2]*size[3], cost_memory.shape[1], self.qk_dim[0])
+        ).to(coords1.device)
+        value = torch.zeros(
+            (size[0], size[2]*size[3], cost_memory.shape[1], self.v_dim[0])
+        ).to(coords1.device)
+
         if cached_result:
-            net, flow_pred_prev = cached_result
+            net, flow_pred_prev, key, value = cached_result
             coords1 = coords0 + flow_pred_prev
 
         if flow_init is not None:
@@ -270,20 +281,10 @@ class MemoryDecoder(nn.Module):
         if self.cfg.gma:
             attention = self.att(inp)
 
-        size = net.shape
-        key = None
-        value = None
-
         if self.deq_cfg.wnorm:
             reset_weight_norm(self.update_block)  # Reset weights for WN
 
-        def func(net, c):
-            # if not self.args.all_grad:
-            #     c = c.detach()
-            # with autocast(enabled=self.args.mixed_precision):
-            #     new_h, delta_flow = self.update_block(h, inp, corr_fn(c), c-coords0, attn) # corr_fn(coords1) produces the index correlation volumes
-            # new_c = c + delta_flow  # F(t+1) = F(t) + \Delta(t)
-            # return new_h, new_c
+        def func(net, c, k, v):
             c = c.detach()
 
             cost_forward = self.encode_flow_token(cost_maps, c)
@@ -292,9 +293,13 @@ class MemoryDecoder(nn.Module):
             query = self.flow_token_encoder(cost_forward)
             query = query.permute(0, 2, 3, 1).contiguous().view(
                 size[0]*size[2]*size[3], 1, self.dim)
-            cost_global, _key, _value = self.decoder_layer(
-                query, key, value, cost_memory, c, size, data['H3W3']
+            k = k.reshape(size[0]*size[2]*size[3], cost_memory.shape[1], self.qk_dim[0])
+            v = v.reshape(size[0]*size[2]*size[3], cost_memory.shape[1], self.v_dim[0])
+            cost_global, new_k, new_v = self.decoder_layer(
+                query, k, v, cost_memory, c, size, data['H3W3']
             )
+            new_k = new_k.reshape(size[0], size[2]*size[3], cost_memory.shape[1], self.qk_dim[0])
+            new_v = new_v.reshape(size[0], size[2]*size[3], cost_memory.shape[1], self.v_dim[0])
 
             if self.cfg.only_global:
                 corr = cost_global
@@ -309,19 +314,20 @@ class MemoryDecoder(nn.Module):
             # flow = delta_flow
             new_c = c + delta_flow
 
-            return new_net, new_c
+            return new_net, new_c, new_k, new_v
 
-        deq_func = DEQWrapper(func, (net, coords1))
-        z_init = deq_func.list2vec(net, coords1) # will be merged into self.deq(...)
+        deq_func = DEQWrapper(func, (net, coords1, key, value))
+        z_init = deq_func.list2vec(net, coords1, key, value)
+        log = (inp.get_device() == 0 and np.random.uniform(0, 1) < 2e-3)
 
-        z_out, info = self.deq(deq_func, z_init)
+        z_out, info = self.deq(deq_func, z_init, log, sradius_mode, **kwargs)
         flow_predictions = [self._decode(z, coords0) for z in z_out]
 
         if self.training:
             return flow_predictions, info
         else:
-            (net, coords1), flow_up = z_out[-1], flow_predictions[-1]
+            (net, coords1, key, value), flow_up = z_out[-1], flow_predictions[-1]
             return coords1-coords0, flow_up, {
-                "cached_result": (net, coords1 - coords0),
+                "cached_result": (net, coords1 - coords0, key, value),
                 "sradius": info['sradius'],
             }

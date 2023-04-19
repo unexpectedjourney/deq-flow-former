@@ -29,7 +29,7 @@ SUM_FREQ = 100
 VAL_FREQ = 5000
 TIME_FREQ = 500
 
-DEVICE = "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def fixed_point_correction(
@@ -168,7 +168,7 @@ def write_stats(args, stats):
 def train_once(cfg, args):
     flowformer = build_flowformer(cfg, args)
     model = nn.DataParallel(flowformer, device_ids=args.gpus)
-    print(f"Parameter Count: {count_parameters(model):.3}%.3f M")
+    print(f"Parameter Count: {count_parameters(model):.3}M")
 
     if args.restore_name is not None:
         model.load_state_dict(torch.load(args.restore_name_per_run), strict=False)
@@ -307,7 +307,7 @@ def train_once(cfg, args):
 def val(cfg, args):
     flowformer = build_flowformer(args)
     model = nn.DataParallel(flowformer, device_ids=args.gpus)
-    print("Parameter Count: %.3f M" % count_parameters(model))
+    print(f"Parameter Count: {count_parameters(model):.3}M")
 
     if args.restore_ckpt is not None:
         model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
@@ -330,7 +330,7 @@ def val(cfg, args):
 def test(cfg, args):
     flowformer = build_flowformer(cfg, args)
     model = nn.DataParallel(flowformer, device_ids=args.gpus)
-    print("Parameter Count: %.3f M" % count_parameters(model))
+    print(f"Parameter Count: {count_parameters(model):.3}M")
 
     if args.restore_ckpt is not None:
         model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
@@ -353,7 +353,7 @@ def test(cfg, args):
 def visualize(cfg, args):
     flowformer = build_flowformer(cfg, args)
     model = nn.DataParallel(flowformer, device_ids=args.gpus)
-    print("Parameter Count: %.3f M" % count_parameters(model))
+    print(f"Parameter Count: {count_parameters(model):.3}M")
 
     if args.restore_ckpt is not None:
         model.load_state_dict(torch.load(args.restore_ckpt), strict=False)

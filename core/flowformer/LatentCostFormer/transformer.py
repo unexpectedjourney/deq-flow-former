@@ -22,7 +22,10 @@ class FlowFormer(nn.Module):
             self.context_encoder = BasicEncoder(
                 output_dim=256, norm_fn='instance')
 
-    def forward(self, image1, image2, output=None, flow_init=None):
+    def forward(
+        self, image1, image2, output=None, flow_init=None, sradius_mode=False,
+        cached_result=None, **kwargs,
+    ):
         # Following https://github.com/princeton-vl/RAFT/
         image1 = 2 * (image1 / 255.0) - 1.0
         image2 = 2 * (image2 / 255.0) - 1.0
@@ -37,6 +40,8 @@ class FlowFormer(nn.Module):
         cost_memory = self.memory_encoder(image1, image2, data, context)
 
         flow_predictions = self.memory_decoder(
-            cost_memory, context, data, flow_init=flow_init)
+            cost_memory, context, data, flow_init=flow_init,
+            sradius_mode=sradius_mode, cached_result=cached_result, **kwargs,
+        )
 
         return flow_predictions

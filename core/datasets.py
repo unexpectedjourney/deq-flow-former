@@ -110,9 +110,12 @@ class MpiSintel(FlowDataset):
             for i in range(len(image_list)-1):
                 self.image_list += [[image_list[i], image_list[i+1]]]
                 self.extra_info += [(scene, i)]  # scene and frame_id
+                # self.image_list = self.image_list[:8]
+                # self.extra_info = self.extra_info[:8]
 
             if split != 'test':
                 self.flow_list += sorted(glob(osp.join(flow_root, scene, '*.flo')))
+                # self.flow_list = self.flow_list[:8]
 
 
 class FlyingChairs(FlowDataset):
