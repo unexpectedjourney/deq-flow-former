@@ -8,12 +8,13 @@ from .cnn import BasicEncoder
 
 
 class FlowFormer(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, cfg, deq_cfg):
         super(FlowFormer, self).__init__()
         self.cfg = cfg
+        self.deq_cfg = deq_cfg
 
         self.memory_encoder = MemoryEncoder(cfg)
-        self.memory_decoder = MemoryDecoder(cfg)
+        self.memory_decoder = MemoryDecoder(cfg, deq_cfg)
         if cfg.cnet == 'twins':
             self.context_encoder = twins_svt_large(
                 pretrained=self.cfg.pretrain)

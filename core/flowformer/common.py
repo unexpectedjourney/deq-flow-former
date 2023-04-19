@@ -5,7 +5,7 @@ from torch import einsum
 
 from einops import rearrange
 
-from utils.utils import bilinear_sampler, indexing
+from core.utils.utils import bilinear_sampler, indexing
 
 
 def nerf_encoding(x, L=6, NORMALIZE_FACOR=1/300):

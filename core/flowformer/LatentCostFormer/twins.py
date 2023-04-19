@@ -21,7 +21,7 @@ from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.models.layers import Mlp, DropPath, to_2tuple, trunc_normal_
 from timm.models.vision_transformer import Attention
 from .attention import LinearPositionEmbeddingSine
-from utils.utils import coords_grid
+from core.utils.utils import coords_grid
 
 
 def _cfg(url='', **kwargs):

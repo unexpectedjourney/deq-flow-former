@@ -7,13 +7,12 @@ import numpy as np
 
 from einops import rearrange
 
-from utils.utils import coords_grid
+from core.utils.utils import coords_grid
 from .attention import (
     BroadMultiHeadAttention, MultiHeadAttention, LinearPositionEmbeddingSine,
     ExpPositionEmbeddingSine
 )
 from ..encoders import twins_svt_large
-from typing import Tuple
 from .cnn import BasicEncoder
 from .mlpmixer import MLPMixerLayer
 from .convnext import ConvNextLayer
@@ -58,7 +57,7 @@ class PatchEmbed(nn.Module):
         )
         self.norm = nn.LayerNorm(embed_dim*2)
 
-    def forward(self, x) -> Tuple[torch.Tensor, Size_]:
+    def forward(self, x):
         B, C, H, W = x.shape    # C == 1
 
         pad_l = pad_t = 0
@@ -69,8 +68,7 @@ class PatchEmbed(nn.Module):
         x = self.proj(x)
         out_size = x.shape[2:]
 
-        patch_coord = coords_grid(B, out_size[0], out_size[1]).to(
-            x.device) * self.patch_size + self.patch_size/2  # in feature coordinate space
+        patch_coord = coords_grid(B, out_size[0], out_size[1]).to(x.device) * self.patch_size + self.patch_size/2  # in feature coordinate space
         patch_coord = patch_coord.view(B, 2, -1).permute(0, 2, 1)
         if self.pe == 'linear':
             patch_coord_enc = LinearPositionEmbeddingSine(

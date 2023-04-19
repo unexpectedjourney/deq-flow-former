@@ -1,10 +1,11 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from einops import rearrange
 
-from utils.utils import coords_grid, bilinear_sampler
+from core.utils.utils import coords_grid, bilinear_sampler
 from .attention import (
     MultiHeadAttention, LinearPositionEmbeddingSine, ExpPositionEmbeddingSine
 )
@@ -164,10 +165,14 @@ class ReverseCostExtractor(nn.Module):
 
 
 class MemoryDecoder(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, cfg, deq_cfg):
         super(MemoryDecoder, self).__init__()
         dim = self.dim = cfg.query_latent_dim
         self.cfg = cfg
+        self.deq_cfg = deq_cfg
+
+        query_token_dim = cfg.query_latent_dim,
+        self.qk_dim, self.v_dim = query_token_dim, query_token_dim
 
         self.flow_token_encoder = nn.Sequential(
             nn.Conv2d(81*cfg.cost_heads_num, dim, 1, 1),
@@ -192,11 +197,11 @@ class MemoryDecoder(nn.Module):
         else:
             self.update_block = BasicUpdateBlock(self.cfg, hidden_dim=128)
 
-        if cfg.wnorm:
+        if deq_cfg.wnorm:
             apply_weight_norm(self.update_block)
 
-        DEQ = get_deq(cfg)
-        self.deq = DEQ(cfg)
+        DEQ = get_deq(deq_cfg)
+        self.deq = DEQ(deq_cfg)
 
     def upsample_flow(self, flow, mask):
         """ Upsample flow field [H/8, W/8, 2] -> [H, W, 2] using convex combination """
@@ -232,13 +237,16 @@ class MemoryDecoder(nn.Module):
         return corr
 
     def _decode(self, z_out, coords0):
-        net, coords1, _, _ = z_out
+        net, coords1 = z_out
         up_mask = .25 * self.mask(net)
         flow_up = self.upsample_flow(coords1 - coords0, up_mask)
 
         return flow_up
 
-    def forward(self, cost_memory, context, data={}, flow_init=None):
+    def forward(
+        self, cost_memory, context, data={}, flow_init=None,
+        cached_result=None,
+    ):
         """
             memory: [B*H1*W1, H2'*W2', C]
             context: [B, D, H1, W1]
@@ -246,30 +254,30 @@ class MemoryDecoder(nn.Module):
         cost_maps = data['cost_maps']
         coords0, coords1 = initialize_flow(context)
 
-        if flow_init is not None:
-            #print("[Using warm start]")
-            coords1 = coords1 + flow_init
-
-        # flow = coords1
-
-        flow_predictions = []
-
         context = self.proj(context)
         net, inp = torch.split(context, [128, 128], dim=1)
         net = torch.tanh(net)
         inp = torch.relu(inp)
+
+        if cached_result:
+            net, flow_pred_prev = cached_result
+            coords1 = coords0 + flow_pred_prev
+
+        if flow_init is not None:
+            coords1 = coords1 + flow_init
 
         attention = None
         if self.cfg.gma:
             attention = self.att(inp)
 
         size = net.shape
-        key, value = None, None
+        key = None
+        value = None
 
-        if self.cfg.wnorm:
+        if self.deq_cfg.wnorm:
             reset_weight_norm(self.update_block)  # Reset weights for WN
 
-        def func(net, c, k, v):
+        def func(net, c):
             # if not self.args.all_grad:
             #     c = c.detach()
             # with autocast(enabled=self.args.mixed_precision):
@@ -279,13 +287,14 @@ class MemoryDecoder(nn.Module):
             c = c.detach()
 
             cost_forward = self.encode_flow_token(cost_maps, c)
-            #cost_backward = self.reverse_cost_extractor(cost_maps, coords0, coords1)
+            # cost_backward = self.reverse_cost_extractor(cost_maps, coords0, coords1)
 
             query = self.flow_token_encoder(cost_forward)
             query = query.permute(0, 2, 3, 1).contiguous().view(
                 size[0]*size[2]*size[3], 1, self.dim)
-            cost_global, new_k, new_v = self.decoder_layer(
-                query, k, v, cost_memory, c, size, data['H3W3'])
+            cost_global, _key, _value = self.decoder_layer(
+                query, key, value, cost_memory, c, size, data['H3W3']
+            )
 
             if self.cfg.only_global:
                 corr = cost_global
@@ -293,23 +302,26 @@ class MemoryDecoder(nn.Module):
                 corr = torch.cat([cost_global, cost_forward], dim=1)
 
             flow = c - coords0
-            new_net, up_mask, delta_flow = self.update_block(
+            new_net, delta_flow = self.update_block(
                 net, inp, corr, flow, attention
             )
 
             # flow = delta_flow
             new_c = c + delta_flow
 
-            return new_net, new_c, new_k, new_v
+            return new_net, new_c
 
-        deq_func = DEQWrapper(func, (net, coords1, key, value))
-        z_init = deq_func.list2vec(net, coords1, key, value) # will be merged into self.deq(...)
+        deq_func = DEQWrapper(func, (net, coords1))
+        z_init = deq_func.list2vec(net, coords1) # will be merged into self.deq(...)
+
         z_out, info = self.deq(deq_func, z_init)
         flow_predictions = [self._decode(z, coords0) for z in z_out]
 
         if self.training:
-            return flow_predictions
+            return flow_predictions, info
         else:
-            flow_pred = flow_predictions[-1]
-            _, coords1, _, _ = z_out[-1]
-            return flow_pred, coords1-coords0
+            (net, coords1), flow_up = z_out[-1], flow_predictions[-1]
+            return coords1-coords0, flow_up, {
+                "cached_result": (net, coords1 - coords0),
+                "sradius": info['sradius'],
+            }
