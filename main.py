@@ -5,18 +5,19 @@ import os
 import time
 from functools import partial
 
-import datasets
+import core.datasets as datasets
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 import evaluate
 import viz
-from core.metrics import compute_epe,  merge_metrics
+from core.metrics import compute_epe,  merge_metrics, process_metrics
 
-from core.deq_flow import DEQFlow
+from core.flowformer import build_flowformer
 from core.deq.arg_utils import add_deq_args
 
 from torch.cuda.amp import GradScaler
@@ -27,6 +28,8 @@ MAX_FLOW = 400
 SUM_FREQ = 100
 VAL_FREQ = 5000
 TIME_FREQ = 500
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def fixed_point_correction(
@@ -132,13 +135,13 @@ class Logger:
         self.writer.close()
 
 
-def train(args):
+def train(cfg, args):
     stats = dict()
     for i in range(args.start_run, args.total_run+1):
         if args.restore_name is not None:
             args.restore_name_per_run = 'checkpoints/' + args.restore_name + f'-run-{i}.pth'
         args.name_per_run = args.name + f'-run-{i}'
-        best_chairs, best_sintel, best_kitti = train_once(args)
+        best_chairs, best_sintel, best_kitti = train_once(cfg, args)
 
         if best_chairs['epe'] < 100:
             stats['chairs'] = stats.get('chairs', [])  + [best_chairs['epe']]
@@ -162,9 +165,10 @@ def write_stats(args, stats):
             f.write(f'{key}: {values}\n')
 
 
-def train_once(args):
-    model = nn.DataParallel(DEQFlow(args), device_ids=args.gpus)
-    print(f"Parameter Count: {count_parameters(model):.3}%.3f M")
+def train_once(cfg, args):
+    flowformer = build_flowformer(cfg, args)
+    model = nn.DataParallel(flowformer, device_ids=args.gpus)
+    print(f"Parameter Count: {count_parameters(model):.3}M")
 
     if args.restore_name is not None:
         model.load_state_dict(torch.load(args.restore_name_per_run), strict=False)
@@ -175,11 +179,11 @@ def train_once(args):
         model.load_state_dict(torch.load(restore_path), strict=False)
         print(f'Resume from {restore_path}')
 
-    model.cuda()
+    model.to(DEVICE)
     model.train()
 
-    if args.stage != 'chairs' and not args.active_bn:
-        model.module.freeze_bn()
+    # if args.stage != 'chairs' and not args.active_bn:
+    #     model.module.freeze_bn()
 
     train_loader = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, model)
@@ -198,24 +202,24 @@ def train_once(args):
 
         timer = 0
 
-        for i_batch, data_blob in enumerate(train_loader):
+        for i_batch, data_blob in enumerate(tqdm(train_loader)):
             optimizer.zero_grad()
-            image1, image2, flow, valid = [x.cuda() for x in data_blob]
+            image1, image2, flow, valid = [x.to(DEVICE) for x in data_blob]
 
             if args.add_noise:
                 stdv = np.random.uniform(0.0, 5.0)
-                image1 = (image1 + stdv * torch.randn(*image1.shape).cuda()).clamp(0.0, 255.0)
-                image2 = (image2 + stdv * torch.randn(*image2.shape).cuda()).clamp(0.0, 255.0)
+                image1 = (image1 + stdv * torch.randn(*image1.shape).to(DEVICE)).clamp(0.0, 255.0)
+                image2 = (image2 + stdv * torch.randn(*image2.shape).to(DEVICE)).clamp(0.0, 255.0)
 
             start_time = time.time()
 
             fc_loss = partial(fixed_point_correction, gamma=args.gamma)
-            loss, metrics = model(
-                image1, image2, flow, valid, fc_loss,
-            )
+            flow_predictions, info = model(image1, image2)
+            flow_loss, epe = fc_loss(flow_predictions, flow, valid)
+            batch_metrics = process_metrics(epe, info)
 
-            metrics = merge_metrics(metrics)
-            scaler.scale(loss.mean()).backward()
+            metrics = merge_metrics(batch_metrics)
+            scaler.scale(flow_loss.mean()).backward()
 
             end_time = time.time()
             timer += end_time - start_time
@@ -284,8 +288,8 @@ def train_once(args):
                 logger.write_dict(results)
 
                 model.train()
-                if args.stage != 'chairs':
-                    model.module.freeze_bn()
+                # if args.stage != 'chairs':
+                #     model.module.freeze_bn()
 
             total_steps += 1
 
@@ -300,15 +304,16 @@ def train_once(args):
     return best_chairs, best_sintel, best_kitti
 
 
-def val(args):
-    model = nn.DataParallel(DEQFlow(args), device_ids=args.gpus)
-    print("Parameter Count: %.3f M" % count_parameters(model))
+def val(cfg, args):
+    flowformer = build_flowformer(args)
+    model = nn.DataParallel(flowformer, device_ids=args.gpus)
+    print(f"Parameter Count: {count_parameters(model):.3}M")
 
     if args.restore_ckpt is not None:
         model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
         print(f'Load from {args.restore_ckpt}')
 
-    model.cuda()
+    model.to(DEVICE)
     model.eval()
 
     for val_dataset in args.validation:
@@ -322,14 +327,15 @@ def val(args):
             evaluate.validate_kitti(model.module, sradius_mode=args.sradius_mode)
 
 
-def test(args):
-    model = nn.DataParallel(DEQFlow(args), device_ids=args.gpus)
-    print("Parameter Count: %.3f M" % count_parameters(model))
+def test(cfg, args):
+    flowformer = build_flowformer(cfg, args)
+    model = nn.DataParallel(flowformer, device_ids=args.gpus)
+    print(f"Parameter Count: {count_parameters(model):.3}M")
 
     if args.restore_ckpt is not None:
         model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
 
-    model.cuda()
+    model.to(DEVICE)
     model.eval()
 
     for test_dataset in args.test_set:
@@ -344,14 +350,15 @@ def test(args):
             evaluate.create_kitti_submission(model.module, output_path=args.output_path)
 
 
-def visualize(args):
-    model = nn.DataParallel(DEQFlow(args), device_ids=args.gpus)
-    print("Parameter Count: %.3f M" % count_parameters(model))
+def visualize(cfg, args):
+    flowformer = build_flowformer(cfg, args)
+    model = nn.DataParallel(flowformer, device_ids=args.gpus)
+    print(f"Parameter Count: {count_parameters(model):.3}M")
 
     if args.restore_ckpt is not None:
         model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
 
-    model.cuda()
+    model.to(DEVICE)
     model.eval()
 
     for viz_dataset in args.viz_set:
@@ -429,6 +436,19 @@ if __name__ == '__main__':
     add_deq_args(parser)
     args = parser.parse_args()
 
+    if args.stage == 'chairs':
+        from configs.default import get_cfg
+    elif args.stage == 'things':
+        from configs.things import get_cfg
+    elif args.stage == 'sintel':
+        from configs.sintel import get_cfg
+    elif args.stage == 'kitti':
+        from configs.kitti import get_cfg
+    elif args.stage == 'autoflow':
+        from configs.autoflow import get_cfg
+
+    cfg = get_cfg()
+
     torch.manual_seed(1234)
     np.random.seed(1234)
 
@@ -436,10 +456,10 @@ if __name__ == '__main__':
         os.mkdir('checkpoints')
 
     if args.eval:
-        val(args)
+        val(cfg, args)
     elif args.test:
-        test(args)
+        test(cfg, args)
     elif args.viz:
-        visualize(args)
+        visualize(cfg, args)
     else:
-        train(args)
+        train(cfg, args)

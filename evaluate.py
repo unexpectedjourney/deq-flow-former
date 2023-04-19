@@ -1,6 +1,6 @@
 import os
 
-import datasets
+import core.datasets as datasets
 import numpy as np
 import torch
 
@@ -9,6 +9,8 @@ from core.utils.utils import InputPadder, forward_interpolate
 
 
 MAX_FLOW = 400
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 @torch.no_grad()
@@ -31,7 +33,7 @@ def create_sintel_submission(
 
             padder = InputPadder(image1.shape)
             image1, image2 = padder.pad(
-                image1[None].cuda(), image2[None].cuda())
+                image1[None].to(DEVICE), image2[None].to(DEVICE))
 
             flow_low, flow_pr, info = model(
                 image1,
@@ -48,17 +50,17 @@ def create_sintel_submission(
             # This trick usually (only) improves the optical flow estimation on the ``ambush_1'' sequence,
             # in terms of clearer background estimation.
             if warm_start:
-                flow_prev = forward_interpolate(flow_low[0])[None].cuda()
+                flow_prev = forward_interpolate(flow_low[0])[None].to(DEVICE)
 
             # Note that the fixed point reuse usually does not improve performance.
             # It facilitates the convergence.
             # To improve performance, the borderline check like ``forward_interpolate'' is necessary.
             if fixed_point_reuse:
-                net, flow_pred_low = info['cached_result']
+                net, flow_pred_low, key, value = info['cached_result']
                 flow_pred_low = forward_interpolate(
                     flow_pred_low[0]
-                )[None].cuda()
-                fixed_point = (net, flow_pred_low)
+                )[None].to(DEVICE)
+                fixed_point = (net, flow_pred_low, key, value)
 
             output_dir = os.path.join(output_path, dstype, sequence)
             output_file = os.path.join(output_dir, 'frame%04d.flo' % (frame+1))
@@ -215,8 +217,8 @@ def validate_sintel(model, **kwargs):
 
         for val_id in range(len(val_dataset)):
             image1, image2, flow_gt, _ = val_dataset[val_id]
-            image1 = image1[None].cuda()
-            image2 = image2[None].cuda()
+            image1 = image1[None].to(DEVICE)
+            image2 = image2[None].to(DEVICE)
 
             padder = InputPadder(image1.shape)
             image1, image2 = padder.pad(image1, image2)
