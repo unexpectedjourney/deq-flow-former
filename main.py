@@ -298,7 +298,7 @@ def train_once(cfg, args):
                 break
 
     logger.close()
-    PATH = 'checkpoints/%s.pth' % args.name_per_run
+    PATH = f'checkpoints/{args.name_per_run}.pth'
     torch.save(model.state_dict(), PATH)
 
     return best_chairs, best_sintel, best_kitti

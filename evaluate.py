@@ -84,7 +84,7 @@ def create_kitti_submission(model, output_path='kitti_submission'):
     for test_id in range(len(test_dataset)):
         image1, image2, (frame_id, ) = test_dataset[test_id]
         padder = InputPadder(image1.shape, mode='kitti')
-        image1, image2 = padder.pad(image1[None].cuda(), image2[None].cuda())
+        image1, image2 = padder.pad(image1[None].to(DEVICE), image2[None].to(DEVICE))
 
         _, flow_pr, _ = model(image1, image2)
         flow = padder.unpad(flow_pr[0]).permute(1, 2, 0).cpu().numpy()
@@ -104,8 +104,8 @@ def validate_chairs(model, **kwargs):
     val_dataset = datasets.FlyingChairs(split='validation')
     for val_id in range(len(val_dataset)):
         image1, image2, flow_gt, _ = val_dataset[val_id]
-        image1 = image1[None].cuda()
-        image2 = image2[None].cuda()
+        image1 = image1[None].to(DEVICE)
+        image2 = image2[None].to(DEVICE)
 
         _, flow_pr, info = model(image1, image2, **kwargs)
         epe = torch.sum((flow_pr[0].cpu() - flow_gt)**2, dim=0).sqrt()
@@ -117,7 +117,7 @@ def validate_chairs(model, **kwargs):
     print(f"Validation Chairs EPE: {epe:.3f} ({best['epe']:.3f})")
 
     if np.mean(rho_list) != 0:
-        print("Spectral radius: %.2f" % np.mean(rho_list))
+        print(f"Spectral radius: {np.mean(rho_list):.2f}")
 
     return {'chairs': epe}
 
@@ -137,8 +137,8 @@ def validate_things(model, **kwargs):
 
         for val_id in range(len(val_dataset)):
             image1, image2, flow_gt, valid = val_dataset[val_id]
-            image1 = image1[None].cuda()
-            image2 = image2[None].cuda()
+            image1 = image1[None].to(DEVICE)
+            image2 = image2[None].to(DEVICE)
 
             padder = InputPadder(image1.shape)
             image1, image2 = padder.pad(image1, image2)
@@ -198,7 +198,7 @@ def validate_things(model, **kwargs):
         results[dstype+'_w_mask'] = np.mean(epe_w_mask_list)
 
         if np.mean(rho_list) != 0:
-            print("Spectral radius (%s): %f" % (dstype, np.mean(rho_list)))
+            print(f"Spectral radius ({dstype}): {np.mean(rho_list)}")
 
     return results
 
@@ -241,7 +241,7 @@ def validate_sintel(model, **kwargs):
         results[dstype] = np.mean(epe_list)
 
         if np.mean(rho_list) != 0:
-            print("Spectral radius (%s): %.2f" % (dstype, np.mean(rho_list)))
+            print(f"Spectral radius ({dstype}): {np.mean(rho_list)}")
 
     return results
 
@@ -256,8 +256,8 @@ def validate_kitti(model, **kwargs):
     out_list, epe_list, rho_list = [], [], []
     for val_id in range(len(val_dataset)):
         image1, image2, flow_gt, valid_gt = val_dataset[val_id]
-        image1 = image1[None].cuda()
-        image2 = image2[None].cuda()
+        image1 = image1[None].to(DEVICE)
+        image2 = image2[None].to(DEVICE)
 
         padder = InputPadder(image1.shape, mode='kitti')
         image1, image2 = padder.pad(image1, image2)
@@ -288,6 +288,6 @@ def validate_kitti(model, **kwargs):
     print(f"Validation KITTI: EPE: {epe:.3f} ({best['epe']:.3f}), F1: {f1:.2f} ({best['f1']:.2f})")
 
     if np.mean(rho_list) != 0:
-        print("Spectral radius %.2f" % np.mean(rho_list))
+        print(f"Spectral radius: {np.mean(rho_list)}")
 
     return {'kitti-epe': epe, 'kitti-f1': f1}

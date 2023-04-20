@@ -9,6 +9,9 @@ from core.utils import flow_viz
 from core.utils.utils import InputPadder, forward_interpolate
 
 
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
 @torch.no_grad()
 def sintel_visualization(
     model, split='test', warm_start=False, fixed_point_reuse=False,
@@ -31,7 +34,7 @@ def sintel_visualization(
 
             padder = InputPadder(image1.shape)
             image1, image2 = padder.pad(
-                image1[None].cuda(), image2[None].cuda())
+                image1[None].to(DEVICE), image2[None].to(DEVICE))
 
             flow_low, flow_pr, info = model(
                 image1,
@@ -43,13 +46,13 @@ def sintel_visualization(
             flow = padder.unpad(flow_pr[0]).permute(1, 2, 0).cpu().numpy()
 
             if warm_start:
-                flow_prev = forward_interpolate(flow_low[0])[None].cuda()
+                flow_prev = forward_interpolate(flow_low[0])[None].to(DEVICE)
 
             if fixed_point_reuse:
                 net, flow_pred_low = info['cached_result']
                 flow_pred_low = forward_interpolate(
                     flow_pred_low[0]
-                )[None].cuda()
+                )[None].to(DEVICE)
                 fixed_point = (net, flow_pred_low)
 
             output_dir = os.path.join(output_path, dstype, sequence)
@@ -83,7 +86,7 @@ def kitti_visualization(model, split='test', output_path='kitti_viz'):
     for test_id in range(len(test_dataset)):
         image1, image2, (frame_id, ) = test_dataset[test_id]
         padder = InputPadder(image1.shape, mode='kitti')
-        image1, image2 = padder.pad(image1[None].cuda(), image2[None].cuda())
+        image1, image2 = padder.pad(image1[None].to(DEVICE), image2[None].to(DEVICE))
 
         _, flow_pr, _ = model(image1, image2)
         flow = padder.unpad(flow_pr[0]).permute(1, 2, 0).cpu().numpy()
