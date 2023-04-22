@@ -56,11 +56,11 @@ def create_sintel_submission(
             # It facilitates the convergence.
             # To improve performance, the borderline check like ``forward_interpolate'' is necessary.
             if fixed_point_reuse:
-                net, flow_pred_low, key, value = info['cached_result']
+                net, flow_pred_low = info['cached_result']
                 flow_pred_low = forward_interpolate(
                     flow_pred_low[0]
                 )[None].to(DEVICE)
-                fixed_point = (net, flow_pred_low, key, value)
+                fixed_point = (net, flow_pred_low)
 
             output_dir = os.path.join(output_path, dstype, sequence)
             output_file = os.path.join(output_dir, 'frame%04d.flo' % (frame+1))
