@@ -19,6 +19,7 @@ from core.metrics import compute_epe,  merge_metrics, process_metrics
 
 from core.flowformer import build_flowformer
 from core.deq.arg_utils import add_deq_args
+from core.utils.flow_viz import flow_to_image
 
 from torch.cuda.amp import GradScaler
 
@@ -26,8 +27,6 @@ from torch.cuda.amp import GradScaler
 # exclude extremly large displacements
 MAX_FLOW = 400
 SUM_FREQ = 100
-VAL_FREQ = 5000
-TIME_FREQ = 500
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -131,8 +130,38 @@ class Logger:
         for key in results:
             self.writer.add_scalar(key, results[key], self.total_steps)
 
+    def write_img(self, img, img_name, step):
+        if self.writer is None:
+            self.writer = SummaryWriter()
+
+        self.writer.add_image(img_name, img, step)
+
     def close(self):
         self.writer.close()
+
+
+def visualize_validation_results(model, data_blob, logger, img_name, steps):
+    model.eval()
+    with torch.no_grad():
+        image1, image2, flow, valid = data_blob
+        image1 = image1.to(DEVICE)
+        image2 = image2.to(DEVICE)
+        flow = flow.to(DEVICE)
+        valid = valid.to(DEVICE)
+
+        _, _, info = model(image1, image2)
+        flow_predictions = info.get("flow_predictions", [])
+
+    model.train()
+    flow_predictions = [
+        el.clone().detach().cpu().numpy()[0, ...] for el in flow_predictions
+    ]
+
+    flow_predictions = flow_predictions[:1] + flow_predictions[-2:]
+
+    flow_prediction_line = np.concatenate(flow_predictions, axis=2)
+    flow_prediction_line = flow_to_image(flow_prediction_line.T).T
+    logger.write_img(flow_prediction_line, img_name, steps)
 
 
 def train(cfg, args):
@@ -186,6 +215,17 @@ def train_once(cfg, args):
     #     model.module.freeze_bn()
 
     train_loader = datasets.fetch_dataloader(args)
+
+    aug_params = {
+        'crop_size': args.image_size,
+    }
+    val_data = datasets.MpiSintel(
+        aug_params,
+        split='training',
+        dstype="clean"
+    )
+    val_data_blob = [el.unsqueeze(0) for el in val_data[0]]
+
     optimizer, scheduler = fetch_optimizer(args, model)
     scheduler.last_epoch = args.resume_iter if args.resume_iter > 0 else -1
 
@@ -244,6 +284,14 @@ def train_once(cfg, args):
 
             if total_steps % args.eval_interval == args.eval_interval - 1:
                 results = {}
+
+                visualize_validation_results(
+                    model,
+                    val_data_blob,
+                    logger,
+                    "train-sintel",
+                    total_steps
+                )
                 for val_dataset in args.validation:
                     if val_dataset == 'chairs':
                         res = evaluate.validate_chairs(

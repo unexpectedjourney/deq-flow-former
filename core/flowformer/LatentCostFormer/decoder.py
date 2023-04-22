@@ -320,4 +320,5 @@ class MemoryDecoder(nn.Module):
             return coords1-coords0, flow_up, {
                 "cached_result": (net, coords1 - coords0),
                 "sradius": info['sradius'],
+                "flow_predictions": flow_predictions,
             }
