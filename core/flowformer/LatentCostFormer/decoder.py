@@ -67,8 +67,7 @@ class CrossAttentionLayer(nn.Module):
         """
         B, _, H1, W1 = query_coord.shape
 
-        # if key is None and value is None:
-        if (key == 0).all() and (value == 0).all():
+        if key is None and value is None:
             key = self.k(memory)
             value = self.v(memory)
 
@@ -240,7 +239,7 @@ class MemoryDecoder(nn.Module):
         return corr
 
     def _decode(self, z_out, coords0):
-        net, coords1, _, _ = z_out
+        net, coords1 = z_out
         up_mask = .25 * self.mask(net)
         flow_up = self.upsample_flow(coords1 - coords0, up_mask)
 
@@ -263,15 +262,10 @@ class MemoryDecoder(nn.Module):
         inp = torch.relu(inp)
 
         size = net.shape
-        key = torch.zeros(
-            (size[0], size[2]*size[3], cost_memory.shape[1], self.qk_dim[0])
-        ).to(coords1.device)
-        value = torch.zeros(
-            (size[0], size[2]*size[3], cost_memory.shape[1], self.v_dim[0])
-        ).to(coords1.device)
-
+        key = None
+        value = None
         if cached_result:
-            net, flow_pred_prev, key, value = cached_result
+            net, flow_pred_prev = cached_result
             coords1 = coords0 + flow_pred_prev
 
         if flow_init is not None:
@@ -284,7 +278,7 @@ class MemoryDecoder(nn.Module):
         if self.deq_cfg.wnorm:
             reset_weight_norm(self.update_block)  # Reset weights for WN
 
-        def func(net, c, k, v):
+        def func(net, c):
             c = c.detach()
 
             cost_forward = self.encode_flow_token(cost_maps, c)
@@ -293,13 +287,9 @@ class MemoryDecoder(nn.Module):
             query = self.flow_token_encoder(cost_forward)
             query = query.permute(0, 2, 3, 1).contiguous().view(
                 size[0]*size[2]*size[3], 1, self.dim)
-            k = k.reshape(size[0]*size[2]*size[3], cost_memory.shape[1], self.qk_dim[0])
-            v = v.reshape(size[0]*size[2]*size[3], cost_memory.shape[1], self.v_dim[0])
-            cost_global, new_k, new_v = self.decoder_layer(
-                query, k, v, cost_memory, c, size, data['H3W3']
+            cost_global, new_key, new_value = self.decoder_layer(
+                query, key, value, cost_memory, c, size, data['H3W3']
             )
-            new_k = new_k.reshape(size[0], size[2]*size[3], cost_memory.shape[1], self.qk_dim[0])
-            new_v = new_v.reshape(size[0], size[2]*size[3], cost_memory.shape[1], self.v_dim[0])
 
             if self.cfg.only_global:
                 corr = cost_global
@@ -314,10 +304,10 @@ class MemoryDecoder(nn.Module):
             # flow = delta_flow
             new_c = c + delta_flow
 
-            return new_net, new_c, new_k, new_v
+            return new_net, new_c
 
-        deq_func = DEQWrapper(func, (net, coords1, key, value))
-        z_init = deq_func.list2vec(net, coords1, key, value)
+        deq_func = DEQWrapper(func, (net, coords1))
+        z_init = deq_func.list2vec(net, coords1)
         log = (inp.get_device() == 0 and np.random.uniform(0, 1) < 2e-3)
 
         z_out, info = self.deq(deq_func, z_init, log, sradius_mode, **kwargs)
@@ -326,8 +316,8 @@ class MemoryDecoder(nn.Module):
         if self.training:
             return flow_predictions, info
         else:
-            (net, coords1, key, value), flow_up = z_out[-1], flow_predictions[-1]
+            (net, coords1), flow_up = z_out[-1], flow_predictions[-1]
             return coords1-coords0, flow_up, {
-                "cached_result": (net, coords1 - coords0, key, value),
+                "cached_result": (net, coords1 - coords0),
                 "sradius": info['sradius'],
             }
