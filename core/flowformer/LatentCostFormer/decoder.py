@@ -110,7 +110,7 @@ class MemoryDecoderLayer(nn.Module):
         query_token_dim, tgt_token_dim = cfg.query_latent_dim, cfg.cost_latent_dim
         qk_dim, v_dim = query_token_dim, query_token_dim
         self.cross_attend = CrossAttentionLayer(
-            qk_dim, v_dim, query_token_dim, tgt_token_dim, 
+            qk_dim, v_dim, query_token_dim, tgt_token_dim,
             add_flow_token=cfg.add_flow_token, dropout=cfg.dropout
         )
 
