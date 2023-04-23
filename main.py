@@ -23,6 +23,20 @@ from core.utils.flow_viz import flow_to_image
 
 from torch.cuda.amp import GradScaler
 
+try:
+    autocast = torch.cuda.amp.autocast
+except:
+    # dummy autocast for PyTorch < 1.6
+    class autocast:
+        def __init__(self, enabled):
+            pass
+
+        def __enter__(self):
+            pass
+
+        def __exit__(self, *args):
+            pass
+
 
 # exclude extremly large displacements
 MAX_FLOW = 400
@@ -98,7 +112,8 @@ class Logger:
         sorted_keys = sorted(self.running_loss.keys())
         metrics_data = [self.running_loss[k]/SUM_FREQ for k in sorted_keys]
         training_str = f"[Step {self.total_steps+1:6d}, lr {self.scheduler.get_last_lr()[0]:.7}]   "
-        metrics_str = ", ".join([f"{name}:{val:10.4f}" for (name, val) in zip(sorted_keys, metrics_data)])
+        metrics_str = ", ".join([f"{name}:{val:10.4f}" for (
+            name, val) in zip(sorted_keys, metrics_data)])
 
         # print the training status
         print(training_str + metrics_str)
@@ -107,7 +122,8 @@ class Logger:
             self.writer = SummaryWriter("runs/" + args.name_per_run)
 
         for k in self.running_loss:
-            self.writer.add_scalar(k, self.running_loss[k]/SUM_FREQ, self.total_steps)
+            self.writer.add_scalar(
+                k, self.running_loss[k]/SUM_FREQ, self.total_steps)
             self.running_loss[k] = 0.0
 
     def push(self, metrics):
@@ -140,7 +156,7 @@ class Logger:
         self.writer.close()
 
 
-def visualize_validation_results(model, data_blob, logger, img_name, steps):
+def visualize_validation_results(model, data_blob, logger, img_name, steps, args):
     model.eval()
     with torch.no_grad():
         image1, image2, flow, valid = data_blob
@@ -149,7 +165,8 @@ def visualize_validation_results(model, data_blob, logger, img_name, steps):
         flow = flow.to(DEVICE)
         valid = valid.to(DEVICE)
 
-        _, _, info = model(image1, image2)
+        with autocast(enabled=args.mixed_precision):
+            _, _, info = model(image1, image2)
         flow_predictions = info.get("flow_predictions", [])
 
     model.train()
@@ -168,18 +185,22 @@ def train(cfg, args):
     stats = dict()
     for i in range(args.start_run, args.total_run+1):
         if args.restore_name is not None:
-            args.restore_name_per_run = 'checkpoints/' + args.restore_name + f'-run-{i}.pth'
+            args.restore_name_per_run = 'checkpoints/' + \
+                args.restore_name + f'-run-{i}.pth'
         args.name_per_run = args.name + f'-run-{i}'
         best_chairs, best_sintel, best_kitti = train_once(cfg, args)
 
         if best_chairs['epe'] < 100:
-            stats['chairs'] = stats.get('chairs', [])  + [best_chairs['epe']]
+            stats['chairs'] = stats.get('chairs', []) + [best_chairs['epe']]
         if best_sintel['clean-epe'] < 100:
-            stats['sintel clean'] = stats.get('sintel clean', [])  + [best_sintel['clean-epe']]
-            stats['sintel final'] = stats.get('sintel final', [])  + [best_sintel['final-epe']]
+            stats['sintel clean'] = stats.get(
+                'sintel clean', []) + [best_sintel['clean-epe']]
+            stats['sintel final'] = stats.get(
+                'sintel final', []) + [best_sintel['final-epe']]
         if best_kitti['epe'] < 100:
-            stats['kitti epe'] = stats.get('kitti epe', []) + [best_kitti['epe']]
-            stats['kitti f1']  = stats.get('kitti f1', []) + [best_kitti['f1']]
+            stats['kitti epe'] = stats.get(
+                'kitti epe', []) + [best_kitti['epe']]
+            stats['kitti f1'] = stats.get('kitti f1', []) + [best_kitti['f1']]
 
         write_stats(args, stats)
 
@@ -200,7 +221,8 @@ def train_once(cfg, args):
     print(f"Parameter Count: {count_parameters(model):.3}M")
 
     if args.restore_name is not None:
-        model.load_state_dict(torch.load(args.restore_name_per_run), strict=False)
+        model.load_state_dict(torch.load(
+            args.restore_name_per_run), strict=False)
         print(f'Load from {args.restore_name_per_run}')
 
     if args.resume_iter > 0:
@@ -248,14 +270,19 @@ def train_once(cfg, args):
 
             if args.add_noise:
                 stdv = np.random.uniform(0.0, 5.0)
-                image1 = (image1 + stdv * torch.randn(*image1.shape).to(DEVICE)).clamp(0.0, 255.0)
-                image2 = (image2 + stdv * torch.randn(*image2.shape).to(DEVICE)).clamp(0.0, 255.0)
+                image1 = (image1 + stdv * torch.randn(*
+                          image1.shape).to(DEVICE)).clamp(0.0, 255.0)
+                image2 = (image2 + stdv * torch.randn(*
+                          image2.shape).to(DEVICE)).clamp(0.0, 255.0)
 
             start_time = time.time()
 
             fc_loss = partial(fixed_point_correction, gamma=args.gamma)
-            flow_predictions, info = model(image1, image2)
-            flow_loss, epe = fc_loss(flow_predictions, flow, valid)
+
+            with autocast(enabled=args.mixed_precision):
+                flow_predictions, info = model(image1, image2)
+                flow_loss, epe = fc_loss(flow_predictions, flow, valid)
+
             batch_metrics = process_metrics(epe, info)
 
             metrics = merge_metrics(batch_metrics)
@@ -275,7 +302,8 @@ def train_once(cfg, args):
             logger.push(metrics)
 
             if (total_steps + 1) % args.time_interval == 0:
-                print(f'Exp {args.name_per_run} Average Time: {timer / args.time_interval}')
+                print(
+                    f'Exp {args.name_per_run} Average Time: {timer / args.time_interval}')
                 timer = 0
 
             if (total_steps + 1) % args.save_interval == 0:
@@ -290,12 +318,14 @@ def train_once(cfg, args):
                     val_data_blob,
                     logger,
                     "train-sintel",
-                    total_steps
+                    total_steps,
+                    args,
                 )
                 for val_dataset in args.validation:
                     if val_dataset == 'chairs':
                         res = evaluate.validate_chairs(
                             model.module,
+                            mixed_precision=args.mixed_precision,
                             sradius_mode=args.sradius_mode,
                             best=best_chairs
                         )
@@ -307,12 +337,14 @@ def train_once(cfg, args):
                         results.update(
                             evaluate.validate_things(
                                 model.module,
+                                mixed_precision=args.mixed_precision,
                                 sradius_mode=args.sradius_mode
                             )
                         )
                     elif val_dataset == 'sintel':
                         res = evaluate.validate_sintel(
                             model.module,
+                            mixed_precision=args.mixed_precision,
                             sradius_mode=args.sradius_mode,
                             best=best_sintel
                         )
@@ -326,11 +358,14 @@ def train_once(cfg, args):
                     elif val_dataset == 'kitti':
                         res = evaluate.validate_kitti(
                             model.module,
+                            mixed_precision=args.mixed_precision,
                             sradius_mode=args.sradius_mode,
                             best=best_kitti
                         )
-                        best_kitti['epe'] = min(res['kitti-epe'], best_kitti['epe'])
-                        best_kitti['f1'] = min(res['kitti-f1'], best_kitti['f1'])
+                        best_kitti['epe'] = min(
+                            res['kitti-epe'], best_kitti['epe'])
+                        best_kitti['f1'] = min(
+                            res['kitti-f1'], best_kitti['f1'])
                         results.update(res)
 
                 logger.write_dict(results)
@@ -366,13 +401,29 @@ def val(cfg, args):
 
     for val_dataset in args.validation:
         if val_dataset == 'chairs':
-            evaluate.validate_chairs(model.module, sradius_mode=args.sradius_mode)
+            evaluate.validate_chairs(
+                model.module,
+                mixed_precision=args.mixed_precision,
+                sradius_mode=args.sradius_mode
+            )
         elif val_dataset == 'things':
-            evaluate.validate_things(model.module, sradius_mode=args.sradius_mode)
+            evaluate.validate_things(
+                model.module,
+                mixed_precision=args.mixed_precision,
+                sradius_mode=args.sradius_mode
+            )
         elif val_dataset == 'sintel':
-            evaluate.validate_sintel(model.module, sradius_mode=args.sradius_mode)
+            evaluate.validate_sintel(
+                model.module,
+                mixed_precision=args.mixed_precision,
+                sradius_mode=args.sradius_mode
+            )
         elif val_dataset == 'kitti':
-            evaluate.validate_kitti(model.module, sradius_mode=args.sradius_mode)
+            evaluate.validate_kitti(
+                model.module,
+                mixed_precision=args.mixed_precision,
+                sradius_mode=args.sradius_mode
+            )
 
 
 def test(cfg, args):
@@ -390,12 +441,17 @@ def test(cfg, args):
         if test_dataset == 'sintel':
             evaluate.create_sintel_submission(
                 model.module,
+                mixed_precision=args.mixed_precision,
                 output_path=args.output_path,
                 fixed_point_reuse=args.fixed_point_reuse,
                 warm_start=args.warm_start
             )
         elif test_dataset == 'kitti':
-            evaluate.create_kitti_submission(model.module, output_path=args.output_path)
+            evaluate.create_kitti_submission(
+                model.module,
+                mixed_precision=args.mixed_precision,
+                output_path=args.output_path
+            )
 
 
 def visualize(cfg, args):
@@ -429,56 +485,79 @@ def visualize(cfg, args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--eval', action='store_true', help="Enable Eval mode.")
-    parser.add_argument('--test', action='store_true', help="Enable Test mode.")
+    parser.add_argument('--eval', action='store_true',
+                        help="Enable Eval mode.")
+    parser.add_argument('--test', action='store_true',
+                        help="Enable Test mode.")
     parser.add_argument('--viz', action='store_true', help="Enable Viz mode.")
-    parser.add_argument('--fixed_point_reuse', action='store_true', help="Enable fixed point reuse.")
-    parser.add_argument('--warm_start', action='store_true', help="Enable warm start.")
+    parser.add_argument('--fixed_point_reuse',
+                        action='store_true', help="Enable fixed point reuse.")
+    parser.add_argument('--warm_start', action='store_true',
+                        help="Enable warm start.")
 
-    parser.add_argument('--name', default='deq-flow', help="name your experiment")
-    parser.add_argument('--stage', help="determines which dataset to use for training") 
+    parser.add_argument('--name', default='deq-flow',
+                        help="name your experiment")
+    parser.add_argument(
+        '--stage', help="determines which dataset to use for training")
 
-    parser.add_argument('--total_run', type=int, default=1, help="total number of runs")
-    parser.add_argument('--start_run', type=int, default=1, help="begin from the given number of runs")
+    parser.add_argument('--total_run', type=int, default=1,
+                        help="total number of runs")
+    parser.add_argument('--start_run', type=int, default=1,
+                        help="begin from the given number of runs")
     parser.add_argument('--restore_name', help="restore experiment name")
-    parser.add_argument('--resume_iter', type=int, default=-1, help="resume from the given iterations")
+    parser.add_argument('--resume_iter', type=int, default=-1,
+                        help="resume from the given iterations")
 
-    parser.add_argument('--tiny', action='store_true', help='use a tiny model for ablation study')
-    parser.add_argument('--large', action='store_true', help='use a large model')
+    parser.add_argument('--tiny', action='store_true',
+                        help='use a tiny model for ablation study')
+    parser.add_argument('--large', action='store_true',
+                        help='use a large model')
     parser.add_argument('--huge', action='store_true', help='use a huge model')
-    parser.add_argument('--gigantic', action='store_true', help='use a gigantic model')
-    parser.add_argument('--old_version', action='store_true', help='use the old design for flow head')
+    parser.add_argument('--gigantic', action='store_true',
+                        help='use a gigantic model')
+    parser.add_argument('--old_version', action='store_true',
+                        help='use the old design for flow head')
 
-    parser.add_argument('--restore_ckpt', help="restore checkpoint for val/test/viz")
+    parser.add_argument(
+        '--restore_ckpt', help="restore checkpoint for val/test/viz")
     parser.add_argument('--validation', type=str, nargs='+')
     parser.add_argument('--test_set', type=str, nargs='+')
     parser.add_argument('--viz_set', type=str, nargs='+')
     parser.add_argument('--viz_split', type=str, nargs='+', default=['test'])
     parser.add_argument('--output_path', help="output path for evaluation")
 
-    parser.add_argument('--eval_interval', type=int, default=5000, help="evaluation interval")
-    parser.add_argument('--save_interval', type=int, default=5000, help="saving interval")
-    parser.add_argument('--time_interval', type=int, default=500, help="timing interval")
+    parser.add_argument('--eval_interval', type=int,
+                        default=5000, help="evaluation interval")
+    parser.add_argument('--save_interval', type=int,
+                        default=5000, help="saving interval")
+    parser.add_argument('--time_interval', type=int,
+                        default=500, help="timing interval")
 
     parser.add_argument('--gma', action='store_true', help='use gma')
 
     parser.add_argument('--lr', type=float, default=0.00002)
     parser.add_argument('--num_steps', type=int, default=100000)
     parser.add_argument('--batch_size', type=int, default=6)
-    parser.add_argument('--image_size', type=int, nargs='+', default=[384, 512])
+    parser.add_argument('--image_size', type=int,
+                        nargs='+', default=[384, 512])
     parser.add_argument('--gpus', type=int, nargs='+', default=[0, 1])
-    parser.add_argument('--schedule', type=str, default="onecycle", help="learning rate schedule")
-    parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
+    parser.add_argument('--schedule', type=str,
+                        default="onecycle", help="learning rate schedule")
+    parser.add_argument('--mixed_precision',
+                        action='store_true', help='use mixed precision')
 
     parser.add_argument('--wdecay', type=float, default=.00005)
     parser.add_argument('--epsilon', type=float, default=1e-8)
     parser.add_argument('--clip', type=float, default=1.0)
     parser.add_argument('--dropout', type=float, default=0.0)
-    parser.add_argument('--vdropout', type=float, default=0.0, help="variational dropout added to BasicMotionEncoder for DEQs")
-    parser.add_argument('--gamma', type=float, default=0.8, help='exponential weighting')
+    parser.add_argument('--vdropout', type=float, default=0.0,
+                        help="variational dropout added to BasicMotionEncoder for DEQs")
+    parser.add_argument('--gamma', type=float, default=0.8,
+                        help='exponential weighting')
     parser.add_argument('--add_noise', action='store_true')
     parser.add_argument('--active_bn', action='store_true')
-    parser.add_argument('--all_grad', action='store_true', help="Remove the gradient mask within DEQ func.")
+    parser.add_argument('--all_grad', action='store_true',
+                        help="Remove the gradient mask within DEQ func.")
 
     # Add args for utilizing DEQ
     add_deq_args(parser)

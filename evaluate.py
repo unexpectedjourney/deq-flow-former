@@ -7,6 +7,20 @@ import torch
 from core.utils import frame_utils
 from core.utils.utils import InputPadder, forward_interpolate
 
+try:
+    autocast = torch.cuda.amp.autocast
+except:
+    # dummy autocast for PyTorch < 1.6
+    class autocast:
+        def __init__(self, enabled):
+            pass
+
+        def __enter__(self):
+            pass
+
+        def __exit__(self, *args):
+            pass
+
 
 MAX_FLOW = 400
 
@@ -16,7 +30,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 @torch.no_grad()
 def create_sintel_submission(
     model, warm_start=False, fixed_point_reuse=False,
-    output_path='sintel_submission', **kwargs
+    mixed_precision=False, output_path='sintel_submission', **kwargs
 ):
     """ Create submission for the Sintel leaderboard """
     model.eval()
@@ -35,13 +49,14 @@ def create_sintel_submission(
             image1, image2 = padder.pad(
                 image1[None].to(DEVICE), image2[None].to(DEVICE))
 
-            flow_low, flow_pr, info = model(
-                image1,
-                image2,
-                flow_init=flow_prev,
-                cached_result=fixed_point,
-                **kwargs
-            )
+            with autocast(enabled=mixed_precision):
+                flow_low, flow_pr, info = model(
+                    image1,
+                    image2,
+                    flow_init=flow_prev,
+                    cached_result=fixed_point,
+                    **kwargs
+                )
             flow = padder.unpad(flow_pr[0]).permute(1, 2, 0).cpu().numpy()
 
             # You may choose to use some hacks here,
@@ -73,7 +88,9 @@ def create_sintel_submission(
 
 
 @torch.no_grad()
-def create_kitti_submission(model, output_path='kitti_submission'):
+def create_kitti_submission(
+        model, output_path='kitti_submission', mixed_precision=False
+):
     """ Create submission for the KITTI leaderboard """
     model.eval()
     test_dataset = datasets.KITTI(split='testing', aug_params=None)
@@ -84,9 +101,11 @@ def create_kitti_submission(model, output_path='kitti_submission'):
     for test_id in range(len(test_dataset)):
         image1, image2, (frame_id, ) = test_dataset[test_id]
         padder = InputPadder(image1.shape, mode='kitti')
-        image1, image2 = padder.pad(image1[None].to(DEVICE), image2[None].to(DEVICE))
+        image1, image2 = padder.pad(
+            image1[None].to(DEVICE), image2[None].to(DEVICE))
 
-        _, flow_pr, _ = model(image1, image2)
+        with autocast(enabled=mixed_precision):
+            _, flow_pr, _ = model(image1, image2)
         flow = padder.unpad(flow_pr[0]).permute(1, 2, 0).cpu().numpy()
 
         output_filename = os.path.join(output_path, frame_id)
@@ -94,7 +113,7 @@ def create_kitti_submission(model, output_path='kitti_submission'):
 
 
 @torch.no_grad()
-def validate_chairs(model, **kwargs):
+def validate_chairs(model, mixed_precision=False, **kwargs):
     """ Perform evaluation on the FlyingChairs (test) split """
     model.eval()
     epe_list = []
@@ -107,7 +126,8 @@ def validate_chairs(model, **kwargs):
         image1 = image1[None].to(DEVICE)
         image2 = image2[None].to(DEVICE)
 
-        _, flow_pr, info = model(image1, image2, **kwargs)
+        with autocast(enabled=mixed_precision):
+            _, flow_pr, info = model(image1, image2, **kwargs)
         epe = torch.sum((flow_pr[0].cpu() - flow_gt)**2, dim=0).sqrt()
         epe_list.append(epe.view(-1).numpy())
         rho_list.append(info['sradius'].mean().item())
@@ -123,7 +143,7 @@ def validate_chairs(model, **kwargs):
 
 
 @torch.no_grad()
-def validate_things(model, **kwargs):
+def validate_things(model, mixed_precision=False, **kwargs):
     """ Peform validation using the FlyingThings3D (test) split """
     model.eval()
     results = {}
@@ -143,7 +163,8 @@ def validate_things(model, **kwargs):
             padder = InputPadder(image1.shape)
             image1, image2 = padder.pad(image1, image2)
 
-            flow_low, flow_pr, info = model(image1, image2, **kwargs)
+            with autocast(enabled=mixed_precision):
+                flow_low, flow_pr, info = model(image1, image2, **kwargs)
             flow = padder.unpad(flow_pr[0]).cpu()
 
             # exlude invalid pixels and extremely large diplacements
@@ -204,7 +225,7 @@ def validate_things(model, **kwargs):
 
 
 @torch.no_grad()
-def validate_sintel(model, **kwargs):
+def validate_sintel(model, mixed_precision=False, **kwargs):
     """ Peform validation using the Sintel (train) split """
     model.eval()
     best = kwargs.get("best", {"clean-epe": 1e8, "final-epe": 1e8})
@@ -223,7 +244,8 @@ def validate_sintel(model, **kwargs):
             padder = InputPadder(image1.shape)
             image1, image2 = padder.pad(image1, image2)
 
-            flow_low, flow_pr, info = model(image1, image2, **kwargs)
+            with autocast(enabled=mixed_precision):
+                flow_low, flow_pr, info = model(image1, image2, **kwargs)
             flow = padder.unpad(flow_pr[0]).cpu()
 
             epe = torch.sum((flow - flow_gt)**2, dim=0).sqrt()
@@ -237,7 +259,8 @@ def validate_sintel(model, **kwargs):
         px5 = np.mean(epe_all < 5) * 100
 
         best[dstype+'-epe'] = min(epe, best[dstype+'-epe'])
-        print(f"Validation ({dstype}) EPE: {epe:.3f} ({best[dstype+'-epe']:.3f}), 1px: {px1:.2f}, 3px: {px3:.2f}, 5px: {px5:.2f}")
+        print(
+            f"Validation ({dstype}) EPE: {epe:.3f} ({best[dstype+'-epe']:.3f}), 1px: {px1:.2f}, 3px: {px3:.2f}, 5px: {px5:.2f}")
         results[dstype] = np.mean(epe_list)
 
         if np.mean(rho_list) != 0:
@@ -247,7 +270,7 @@ def validate_sintel(model, **kwargs):
 
 
 @torch.no_grad()
-def validate_kitti(model, **kwargs):
+def validate_kitti(model, mixed_precision=False, **kwargs):
     """ Peform validation using the KITTI-2015 (train) split """
     model.eval()
     best = kwargs.get("best", {"epe": 1e8, "f1": 1e8})
@@ -262,7 +285,8 @@ def validate_kitti(model, **kwargs):
         padder = InputPadder(image1.shape, mode='kitti')
         image1, image2 = padder.pad(image1, image2)
 
-        flow_low, flow_pr, info = model(image1, image2, **kwargs)
+        with autocast(enabled=mixed_precision):
+            flow_low, flow_pr, info = model(image1, image2, **kwargs)
         flow = padder.unpad(flow_pr[0]).cpu()
 
         epe = torch.sum((flow - flow_gt)**2, dim=0).sqrt()
@@ -285,7 +309,8 @@ def validate_kitti(model, **kwargs):
 
     best['epe'] = min(epe, best['epe'])
     best['f1'] = min(f1, best['f1'])
-    print(f"Validation KITTI: EPE: {epe:.3f} ({best['epe']:.3f}), F1: {f1:.2f} ({best['f1']:.2f})")
+    print(
+        f"Validation KITTI: EPE: {epe:.3f} ({best['epe']:.3f}), F1: {f1:.2f} ({best['f1']:.2f})")
 
     if np.mean(rho_list) != 0:
         print(f"Spectral radius: {np.mean(rho_list)}")
