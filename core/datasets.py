@@ -126,12 +126,51 @@ class FlyingChairs(FlowDataset):
         flows = sorted(glob(osp.join(root, '*.flo')))
         assert (len(images)//2 == len(flows))
 
-        split_list = np.loadtxt('chairs_split.txt', dtype=np.int32)
+        split_list = np.loadtxt('datasets/chairs_split.txt', dtype=np.int32)
         for i in range(len(flows)):
             xid = split_list[i]
             if (split=='training' and xid==1) or (split=='validation' and xid==2):
                 self.flow_list += [flows[i]]
                 self.image_list += [[images[2*i], images[2*i+1]]]
+
+
+class FlyingThingsSubset(FlowDataset):
+    def __init__(self, aug_params=None, root='datasets/FlyingThingsSubset'):
+        super(FlyingThingsSubset, self).__init__(aug_params)
+
+        for view in ['left', 'right']:
+            image_root = osp.join(root, 'train/image_clean', view)
+            flow_root_forward = osp.join(root, 'train/flow', view, 'into_future')
+            flow_root_backward = osp.join(root, 'train/flow/', view, 'into_past')
+
+            image_list = sorted(os.listdir(image_root))
+            flow_forward = set(os.listdir(flow_root_forward))
+            flow_backward = set(os.listdir(flow_root_backward))
+
+            for i in range(len(image_list)-1):
+                img1 = image_list[i]
+                img2 = image_list[i+1]
+
+                image_path1 = osp.join(image_root, img1)
+                image_path2 = osp.join(image_root, img2)
+
+                if img1.replace('.png', '.flo') in flow_forward:
+                    self.image_list += [[image_path1, image_path2]]
+                    self.flow_list += [
+                        osp.join(
+                            flow_root_forward,
+                            img1.replace('.png', '.flo')
+                        )
+                    ]
+
+                if img2.replace('.png', '.flo') in flow_backward:
+                    self.image_list += [[image_path2, image_path1]]
+                    self.flow_list += [
+                        osp.join(
+                            flow_root_backward,
+                            img2.replace('.png', '.flo')
+                        )
+                    ]
 
 
 class FlyingThings3D(FlowDataset):
@@ -222,9 +261,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             'max_scale': 0.8,
             'do_flip': True
         }
-        clean_dataset = FlyingThings3D(aug_params, dstype='frames_cleanpass')
-        final_dataset = FlyingThings3D(aug_params, dstype='frames_finalpass')
-        train_dataset = clean_dataset + final_dataset
+        train_dataset = FlyingThingsSubset(aug_params)
 
     elif args.stage == 'sintel':
         aug_params = {
@@ -233,32 +270,32 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             'max_scale': 0.6,
             'do_flip': True
         }
-        # things = FlyingThings3D(aug_params, dstype='frames_cleanpass')
+        things = FlyingThingsSubset(aug_params)
         sintel_clean = MpiSintel(aug_params, split='training', dstype='clean')
         sintel_final = MpiSintel(aug_params, split='training', dstype='final')
-        train_dataset = 100*sintel_clean + 100*sintel_final
+        # train_dataset = 100*sintel_clean + 100*sintel_final
 
-        # if TRAIN_DS == 'C+T+K+S+H':
-        #     kitti = KITTI(
-        #         {
-        #             'crop_size': args.image_size,
-        #             'min_scale': -0.3,
-        #             'max_scale': 0.5,
-        #             'do_flip': True
-        #         }
-        #     )
-        #     hd1k = HD1K(
-        #         {
-        #             'crop_size': args.image_size,
-        #             'min_scale': -0.5,
-        #             'max_scale': 0.2,
-        #             'do_flip': True
-        #         }
-        #     )
-        #     train_dataset = 100*sintel_clean + 100*sintel_final + 200*kitti + 5*hd1k + things
+        if TRAIN_DS == 'C+T+K+S+H':
+            kitti = KITTI(
+                {
+                    'crop_size': args.image_size,
+                    'min_scale': -0.3,
+                    'max_scale': 0.5,
+                    'do_flip': True
+                }
+            )
+            hd1k = HD1K(
+                {
+                    'crop_size': args.image_size,
+                    'min_scale': -0.5,
+                    'max_scale': 0.2,
+                    'do_flip': True
+                }
+            )
+            train_dataset = 100*sintel_clean + 100*sintel_final + 200*kitti + 5*hd1k + things
 
-        # elif TRAIN_DS == 'C+T+K/S':
-        #     train_dataset = 100*sintel_clean + 100*sintel_final + things
+        elif TRAIN_DS == 'C+T+K/S':
+            train_dataset = 100*sintel_clean + 100*sintel_final + things
 
     elif args.stage == 'kitti':
         aug_params = {
