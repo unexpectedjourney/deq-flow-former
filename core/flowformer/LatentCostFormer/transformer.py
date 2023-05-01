@@ -6,6 +6,20 @@ from .encoder import MemoryEncoder
 from .decoder import MemoryDecoder
 from .cnn import BasicEncoder
 
+try:
+    autocast = torch.cuda.amp.autocast
+except:
+    # dummy autocast for PyTorch < 1.6
+    class autocast:
+        def __init__(self, enabled):
+            pass
+
+        def __enter__(self):
+            pass
+
+        def __exit__(self, *args):
+            pass
+
 
 class FlowFormer(nn.Module):
     def __init__(self, cfg, deq_cfg):
@@ -37,8 +51,9 @@ class FlowFormer(nn.Module):
         else:
             image_inp = image1
 
-        context = self.context_encoder(image_inp)
-        cost_memory = self.memory_encoder(image1, image2, data, context)
+        with autocast(enabled=self.deq_cfg.mixed_precision):
+            context = self.context_encoder(image_inp)
+            cost_memory = self.memory_encoder(image1, image2, data, context)
 
         flow_predictions = self.memory_decoder(
             cost_memory, context, data, flow_init=flow_init,

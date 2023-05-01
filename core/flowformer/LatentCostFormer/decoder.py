@@ -19,6 +19,20 @@ from core.deq import get_deq
 from core.deq.norm import apply_weight_norm, reset_weight_norm
 from core.deq.layer_utils import DEQWrapper
 
+try:
+    autocast = torch.cuda.amp.autocast
+except:
+    # dummy autocast for PyTorch < 1.6
+    class autocast:
+        def __init__(self, enabled):
+            pass
+
+        def __enter__(self):
+            pass
+
+        def __exit__(self, *args):
+            pass
+
 
 def initialize_flow(img):
     """ Flow is represented as difference between two means flow = mean1 - mean0"""
@@ -256,10 +270,11 @@ class MemoryDecoder(nn.Module):
         cost_maps = data['cost_maps']
         coords0, coords1 = initialize_flow(context)
 
-        context = self.proj(context)
-        net, inp = torch.split(context, [128, 128], dim=1)
-        net = torch.tanh(net)
-        inp = torch.relu(inp)
+        with autocast(enabled=self.deq_cfg.mixed_precision):
+            context = self.proj(context)
+            net, inp = torch.split(context, [128, 128], dim=1)
+            net = torch.tanh(net)
+            inp = torch.relu(inp)
 
         size = net.shape
         key = None
@@ -272,8 +287,10 @@ class MemoryDecoder(nn.Module):
             coords1 = coords1 + flow_init
 
         attention = None
+
         if self.cfg.gma:
-            attention = self.att(inp)
+            with autocast(enabled=self.deq_cfg.mixed_precision):
+                attention = self.att(inp)
 
         if self.deq_cfg.wnorm:
             reset_weight_norm(self.update_block)  # Reset weights for WN
@@ -281,15 +298,16 @@ class MemoryDecoder(nn.Module):
         def func(net, c):
             c = c.detach()
 
-            cost_forward = self.encode_flow_token(cost_maps, c)
-            # cost_backward = self.reverse_cost_extractor(cost_maps, coords0, coords1)
+            with autocast(enabled=self.deq_cfg.mixed_precision):
+                cost_forward = self.encode_flow_token(cost_maps, c)
+                # cost_backward = self.reverse_cost_extractor(cost_maps, coords0, coords1)
 
-            query = self.flow_token_encoder(cost_forward)
-            query = query.permute(0, 2, 3, 1).contiguous().view(
-                size[0]*size[2]*size[3], 1, self.dim)
-            cost_global, new_key, new_value = self.decoder_layer(
-                query, key, value, cost_memory, c, size, data['H3W3']
-            )
+                query = self.flow_token_encoder(cost_forward)
+                query = query.permute(0, 2, 3, 1).contiguous().view(
+                    size[0]*size[2]*size[3], 1, self.dim)
+                cost_global, new_key, new_value = self.decoder_layer(
+                    query, key, value, cost_memory, c, size, data['H3W3']
+                )
 
             if self.cfg.only_global:
                 corr = cost_global
@@ -297,9 +315,11 @@ class MemoryDecoder(nn.Module):
                 corr = torch.cat([cost_global, cost_forward], dim=1)
 
             flow = c - coords0
-            new_net, delta_flow = self.update_block(
-                net, inp, corr, flow, attention
-            )
+
+            with autocast(enabled=self.deq_cfg.mixed_precision):
+                new_net, delta_flow = self.update_block(
+                    net, inp, corr, flow, attention
+                )
 
             # flow = delta_flow
             new_c = c + delta_flow
@@ -311,7 +331,9 @@ class MemoryDecoder(nn.Module):
         log = (inp.get_device() == 0 and np.random.uniform(0, 1) < 2e-3)
 
         z_out, info = self.deq(deq_func, z_init, log, sradius_mode, **kwargs)
-        flow_predictions = [self._decode(z, coords0) for z in z_out]
+
+        with autocast(enabled=self.deq_cfg.mixed_precision):
+            flow_predictions = [self._decode(z, coords0) for z in z_out]
 
         if self.training:
             return flow_predictions, info

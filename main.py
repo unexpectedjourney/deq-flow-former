@@ -279,9 +279,8 @@ def train_once(cfg, args):
 
             fc_loss = partial(fixed_point_correction, gamma=args.gamma)
 
-            with autocast(enabled=args.mixed_precision):
-                flow_predictions, info = model(image1, image2)
-                flow_loss, epe = fc_loss(flow_predictions, flow, valid)
+            flow_predictions, info = model(image1, image2)
+            flow_loss, epe = fc_loss(flow_predictions, flow, valid)
 
             batch_metrics = process_metrics(epe, info)
 
