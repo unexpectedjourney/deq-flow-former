@@ -14,7 +14,7 @@ from core.utils.augmentor import FlowAugmentor, SparseFlowAugmentor
 
 
 class FlowDataset(data.Dataset):
-    def __init__(self, aug_params=None, sparse=False):
+    def __init__(self, aug_params=None, sparse=False, seq_len=2, overlap=True):
         self.augmentor = None
         self.sparse = sparse
         if aug_params is not None:
@@ -29,16 +29,23 @@ class FlowDataset(data.Dataset):
         self.image_list = []
         self.extra_info = []
 
+    def fix_colors(self, imgs):
+        if len(imgs[0].shape) == 2:
+            imgs = [np.tile(img[..., None], (1, 1, 3)) for img in imgs]
+        else:
+            imgs = [img[..., :3] for img in imgs]
+        return imgs
+
     def __getitem__(self, index):
 
-        if self.is_test:
-            img1 = frame_utils.read_gen(self.image_list[index][0])
-            img2 = frame_utils.read_gen(self.image_list[index][1])
-            img1 = np.array(img1).astype(np.uint8)[..., :3]
-            img2 = np.array(img2).astype(np.uint8)[..., :3]
-            img1 = torch.from_numpy(img1).permute(2, 0, 1).float()
-            img2 = torch.from_numpy(img2).permute(2, 0, 1).float()
-            return img1, img2, self.extra_info[index]
+        # if self.is_test:
+        #     img1 = frame_utils.read_gen(self.image_list[index][0])
+        #     img2 = frame_utils.read_gen(self.image_list[index][1])
+        #     img1 = np.array(img1).astype(np.uint8)[..., :3]
+        #     img2 = np.array(img2).astype(np.uint8)[..., :3]
+        #     img1 = torch.from_numpy(img1).permute(2, 0, 1).float()
+        #     img2 = torch.from_numpy(img2).permute(2, 0, 1).float()
+        #     return img1, img2, self.extra_info[index]
 
         if not self.init_seed:
             worker_info = torch.utils.data.get_worker_info()
@@ -49,41 +56,45 @@ class FlowDataset(data.Dataset):
                 self.init_seed = True
 
         index = index % len(self.image_list)
-        valid = None
-        if self.sparse:
-            flow, valid = frame_utils.readFlowKITTI(self.flow_list[index])
-        else:
-            flow = frame_utils.read_gen(self.flow_list[index])
 
-        img1 = frame_utils.read_gen(self.image_list[index][0])
-        img2 = frame_utils.read_gen(self.image_list[index][1])
+        flows = []
+        valids = []
 
-        flow = np.array(flow).astype(np.float32)
-        img1 = np.array(img1).astype(np.uint8)
-        img2 = np.array(img2).astype(np.uint8)
+        for i in range(self.seq_len):
+            valid = None
+            flow_path = self.flow_list[index+i]
+            # print(flow_path, self.sparse)
+            if self.sparse:
+                flow, valid = frame_utils.readFlowKITTI(flow_path)
+            else:
+                flow = frame_utils.read_gen(flow_path)
+            flows.append(flow)
+            valids.append(valid)
 
-        # grayscale images
-        if len(img1.shape) == 2:
-            img1 = np.tile(img1[..., None], (1, 1, 3))
-            img2 = np.tile(img2[..., None], (1, 1, 3))
-        else:
-            img1 = img1[..., :3]
-            img2 = img2[..., :3]
+        imgs = [frame_utils.read_gen(self.image_list[index][i]) for i in range(self.seq_len)]
+        imgs = [np.array(img).astype(np.uint8) for img in imgs]
+        flows = [np.array(flow).astype(np.float32) for flow in flows]
+
+        imgs = self.fix_colors(imgs)
 
         if self.augmentor is not None:
             if self.sparse:
-                img1, img2, flow, valid = self.augmentor(img1, img2, flow, valid)
+                img1, img2, flow, valid = self.augmentor(imgs, flows, valids)
             else:
-                img1, img2, flow = self.augmentor(img1, img2, flow)
+                img1, img2, flow = self.augmentor(imgs, flow)
 
-        img1 = torch.from_numpy(img1).permute(2, 0, 1).float()
-        img2 = torch.from_numpy(img2).permute(2, 0, 1).float()
-        flow = torch.from_numpy(flow).permute(2, 0, 1).float()
+        imgs = [torch.from_numpy(img).permute(2, 0, 1).float() for img in imgs]
+        flows = [torch.from_numpy(flow).permute(2, 0, 1).float() for flow in flows]
 
-        if valid is not None:
-            valid = torch.from_numpy(valid)
-        else:
-            valid = (flow[0].abs() < 1000) & (flow[1].abs() < 1000)
+        for i in range(self.seq_len):
+            if valids[i] is not None:
+                valids[i] = torch.from_numpy(valids[i])
+                continue
+            valids[i] = (flows[i][0].abs() < 1000) & (flows[i][1].abs() < 1000)
+
+        flows = torch.stack(flows).float()
+        imgs = torch.stack(imgs).float()
+        valids = torch.stack(valids).float()
 
         return img1, img2, flow, valid.float()
 
@@ -93,12 +104,24 @@ class FlowDataset(data.Dataset):
         return self
 
     def __len__(self):
-        return len(self.image_list)
+        return len(self.image_list) - self.seq_len + 1
 
 
 class MpiSintel(FlowDataset):
-    def __init__(self, aug_params=None, split='training', root='datasets/Sintel', dstype='clean'):
-        super(MpiSintel, self).__init__(aug_params)
+    def __init__(
+            self,
+            aug_params=None,
+            split='training',
+            root='datasets/Sintel',
+            dstype='clean',
+            seq_len=2,
+            overlap=True,
+    ):
+        super(MpiSintel, self).__init__(
+            aug_params,
+            seq_len=seq_len,
+            overlap=overlap
+        )
         flow_root = osp.join(root, split, 'flow')
         image_root = osp.join(root, split, dstype)
 
@@ -107,19 +130,26 @@ class MpiSintel(FlowDataset):
 
         for scene in os.listdir(image_root):
             image_list = sorted(glob(osp.join(image_root, scene, '*.png')))
-            for i in range(len(image_list)-1):
-                self.image_list += [[image_list[i], image_list[i+1]]]
+            for i in range(len(image_list)-seq_len+1):
+                self.image_list += [[image_list[i+k] for k in range(seq_len)]]
                 self.extra_info += [(scene, i)]  # scene and frame_id
                 # self.image_list = self.image_list[:8]
                 # self.extra_info = self.extra_info[:8]
 
             if split != 'test':
-                self.flow_list += sorted(glob(osp.join(flow_root, scene, '*.flo')))
+                self.flow_list += sorted(
+                    glob(osp.join(flow_root, scene, '*.flo'))
+                )
                 # self.flow_list = self.flow_list[:8]
 
 
 class FlyingChairs(FlowDataset):
-    def __init__(self, aug_params=None, split='train', root='datasets/FlyingChairs_release/data'):
+    def __init__(
+            self,
+            aug_params=None,
+            split='train',
+            root='datasets/FlyingChairs_release/data'
+    ):
         super(FlyingChairs, self).__init__(aug_params)
 
         images = sorted(glob(osp.join(root, '*.ppm')))
@@ -315,5 +345,5 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         drop_last=True
     )
 
-    print('Training with %d image pairs' % len(train_dataset))
+    print(f'Training with {len(train_dataset)} image pairs')
     return train_loader
