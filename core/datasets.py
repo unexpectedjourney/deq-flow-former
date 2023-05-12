@@ -38,14 +38,12 @@ class FlowDataset(data.Dataset):
 
     def __getitem__(self, index):
 
-        # if self.is_test:
-        #     img1 = frame_utils.read_gen(self.image_list[index][0])
-        #     img2 = frame_utils.read_gen(self.image_list[index][1])
-        #     img1 = np.array(img1).astype(np.uint8)[..., :3]
-        #     img2 = np.array(img2).astype(np.uint8)[..., :3]
-        #     img1 = torch.from_numpy(img1).permute(2, 0, 1).float()
-        #     img2 = torch.from_numpy(img2).permute(2, 0, 1).float()
-        #     return img1, img2, self.extra_info[index]
+        if self.is_test:
+            imgs = [frame_utils.read_gen(self.image_list[index][i]) for i in range(self.seq_len)]
+            imgs = [np.array(img).astype(np.uint8)[..., :3] for img in imgs]
+            imgs = [torch.from_numpy(img).permute(2, 0, 1).float() for img in imgs]
+            imgs = torch.stack(imgs).float()
+            return imgs, self.extra_info[index]
 
         if not self.init_seed:
             worker_info = torch.utils.data.get_worker_info()
@@ -79,9 +77,9 @@ class FlowDataset(data.Dataset):
 
         if self.augmentor is not None:
             if self.sparse:
-                img1, img2, flow, valid = self.augmentor(imgs, flows, valids)
+                imgs, flows, valids = self.augmentor(imgs, flows, valids)
             else:
-                img1, img2, flow = self.augmentor(imgs, flow)
+                imgs, flows = self.augmentor(imgs, flows)
 
         imgs = [torch.from_numpy(img).permute(2, 0, 1).float() for img in imgs]
         flows = [torch.from_numpy(flow).permute(2, 0, 1).float() for flow in flows]
@@ -96,7 +94,7 @@ class FlowDataset(data.Dataset):
         imgs = torch.stack(imgs).float()
         valids = torch.stack(valids).float()
 
-        return img1, img2, flow, valid.float()
+        return imgs, flows, valids
 
     def __rmul__(self, v):
         self.flow_list = v * self.flow_list
