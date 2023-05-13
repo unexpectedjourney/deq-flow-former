@@ -159,11 +159,10 @@ class Logger:
 def visualize_validation_results(model, data_blob, logger, img_name, steps, args):
     model.eval()
     with torch.no_grad():
-        image1, image2, flow, valid = data_blob
+        imgs, _, _ = data_blob
+        image1, image2 = imgs
         image1 = image1.to(DEVICE)
         image2 = image2.to(DEVICE)
-        flow = flow.to(DEVICE)
-        valid = valid.to(DEVICE)
 
         with autocast(enabled=args.mixed_precision):
             _, _, info = model(image1, image2)
@@ -177,8 +176,11 @@ def visualize_validation_results(model, data_blob, logger, img_name, steps, args
     flow_predictions = flow_predictions[:1] + flow_predictions[-2:]
 
     flow_prediction_line = np.concatenate(flow_predictions, axis=2)
-    flow_prediction_line = flow_to_image(flow_prediction_line.T).T
-    logger.write_img(flow_prediction_line, img_name, steps)
+    try:
+        flow_prediction_line = flow_to_image(flow_prediction_line.T).T
+        logger.write_img(flow_prediction_line, img_name, steps)
+    except Exception as ex:
+        print(ex)
 
 
 def train(cfg, args):
@@ -244,7 +246,8 @@ def train_once(cfg, args):
     val_data = datasets.MpiSintel(
         aug_params,
         split='training',
-        dstype="clean"
+        dstype="clean",
+        seq_len=2,
     )
     val_data_blob = [el.unsqueeze(0) for el in val_data[0]]
 
@@ -265,44 +268,57 @@ def train_once(cfg, args):
         timer = 0
 
         for i_batch, data_blob in enumerate(tqdm(train_loader)):
-            optimizer.zero_grad()
-            image1, image2, flow, valid = [x.to(DEVICE) for x in data_blob]
+            imgs, flows, valids = data_blob
 
-            if args.add_noise:
-                stdv = np.random.uniform(0.0, 5.0)
-                image1 = (image1 + stdv * torch.randn(*
-                          image1.shape).to(DEVICE)).clamp(0.0, 255.0)
-                image2 = (image2 + stdv * torch.randn(*
-                          image2.shape).to(DEVICE)).clamp(0.0, 255.0)
+            for j in range(imgs.shape[1]-1):
+                optimizer.zero_grad()
+                image1 = imgs[:, j, ...]
+                image2 = imgs[:, j+1, ...]
+                flow = flows[:, j, ...]
+                valid = valids[:, j, ...]
 
-            start_time = time.time()
+                image1 = image1.to(DEVICE)
+                image2 = image2.to(DEVICE)
+                flow = flow.to(DEVICE)
+                valid = valid.to(DEVICE)
 
-            fc_loss = partial(fixed_point_correction, gamma=args.gamma)
+                if args.add_noise:
+                    stdv = np.random.uniform(0.0, 5.0)
+                    image1 = (
+                        image1 + stdv * torch.randn(*image1.shape).to(DEVICE)
+                    ).clamp(0.0, 255.0)
+                    image2 = (
+                        image2 + stdv * torch.randn(*image2.shape).to(DEVICE)
+                    ).clamp(0.0, 255.0)
 
-            flow_predictions, info = model(image1, image2)
-            flow_loss, epe = fc_loss(flow_predictions, flow, valid)
+                start_time = time.time()
 
-            batch_metrics = process_metrics(epe, info)
+                fc_loss = partial(fixed_point_correction, gamma=args.gamma)
 
-            metrics = merge_metrics(batch_metrics)
-            scaler.scale(flow_loss.mean()).backward()
+                # TODO extranct the flow_init, net, corr, etc
+                flow_predictions, info = model(image1, image2)
+                flow_loss, epe = fc_loss(flow_predictions, flow, valid)
 
-            end_time = time.time()
-            timer += end_time - start_time
+                batch_metrics = process_metrics(epe, info)
 
-            scaler.unscale_(optimizer)
-            if args.clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+                metrics = merge_metrics(batch_metrics)
+                scaler.scale(flow_loss.mean()).backward()
 
-            scaler.step(optimizer)
-            scheduler.step()
-            scaler.update()
+                end_time = time.time()
+                timer += end_time - start_time
 
-            logger.push(metrics)
+                scaler.unscale_(optimizer)
+                if args.clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+
+                scaler.step(optimizer)
+                scheduler.step()
+                scaler.update()
+
+                logger.push(metrics)
 
             if (total_steps + 1) % args.time_interval == 0:
-                print(
-                    f'Exp {args.name_per_run} Average Time: {timer / args.time_interval}')
+                print(f'Exp {args.name_per_run} Average Time: {timer / args.time_interval}')
                 timer = 0
 
             if (total_steps + 1) % args.save_interval == 0:
