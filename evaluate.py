@@ -40,51 +40,58 @@ def create_sintel_submission(
 
         sequence_prev, flow_prev, fixed_point = None, None, None
         for test_id in range(len(test_dataset)):
-            image1, image2, (sequence, frame) = test_dataset[test_id]
+            imgs, (sequence, frame) = test_dataset[test_id]
             if sequence != sequence_prev:
                 flow_prev = None
                 fixed_point = None
 
-            padder = InputPadder(image1.shape)
-            image1, image2 = padder.pad(
-                image1[None].to(DEVICE), image2[None].to(DEVICE))
+            for j in range(imgs.shape[1] - 1):
+                image1 = imgs[:, j, ...]
+                image2 = imgs[:, j+1, ...]
 
-            with autocast(enabled=mixed_precision):
-                flow_low, flow_pr, info = model(
-                    image1,
-                    image2,
-                    flow_init=flow_prev,
-                    cached_result=fixed_point,
-                    **kwargs
+                padder = InputPadder(image1.shape)
+                image1, image2 = padder.pad(
+                    image1[None].to(DEVICE),
+                    image2[None].to(DEVICE)
                 )
-            flow = padder.unpad(flow_pr[0]).permute(1, 2, 0).cpu().numpy()
 
-            # You may choose to use some hacks here,
-            # for example, warm start, i.e., reusing the f* part with a borderline check (forward_interpolate),
-            # which was orignally taken by RAFT.
-            # This trick usually (only) improves the optical flow estimation on the ``ambush_1'' sequence,
-            # in terms of clearer background estimation.
-            if warm_start:
-                flow_prev = forward_interpolate(flow_low[0])[None].to(DEVICE)
+                with autocast(enabled=mixed_precision):
+                    flow_low, flow_pr, info = model(
+                        image1,
+                        image2,
+                        flow_init=flow_prev,
+                        cached_result=fixed_point,
+                        **kwargs
+                    )
+                flow = padder.unpad(flow_pr[0]).permute(1, 2, 0).cpu().numpy()
 
-            # Note that the fixed point reuse usually does not improve performance.
-            # It facilitates the convergence.
-            # To improve performance, the borderline check like ``forward_interpolate'' is necessary.
-            if fixed_point_reuse:
-                net, flow_pred_low = info['cached_result']
-                flow_pred_low = forward_interpolate(
-                    flow_pred_low[0]
-                )[None].to(DEVICE)
-                fixed_point = (net, flow_pred_low)
+                # You may choose to use some hacks here,
+                # for example, warm start, i.e., reusing the f* part with a borderline check (forward_interpolate),
+                # which was orignally taken by RAFT.
+                # This trick usually (only) improves the optical flow estimation on the ``ambush_1'' sequence,
+                # in terms of clearer background estimation.
+                if warm_start:
+                    flow_prev = forward_interpolate(flow_low[0])[None].to(DEVICE)
 
-            output_dir = os.path.join(output_path, dstype, sequence)
-            output_file = os.path.join(output_dir, 'frame%04d.flo' % (frame+1))
+                # Note that the fixed point reuse usually does not improve performance.
+                # It facilitates the convergence.
+                # To improve performance, the borderline check like ``forward_interpolate'' is necessary.
+                if fixed_point_reuse:
+                    net, flow_pred_low = info['cached_result']
+                    flow_pred_low = forward_interpolate(
+                        flow_pred_low[0]
+                    )[None].to(DEVICE)
+                    fixed_point = (net, flow_pred_low)
 
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
+                output_dir = os.path.join(output_path, dstype, sequence)
+                # TODO overlap will be here
+                output_file = os.path.join(output_dir, f'frame{(frame+1+j):04d}.flo')
 
-            frame_utils.writeFlow(output_file, flow)
-            sequence_prev = sequence
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+
+                frame_utils.writeFlow(output_file, flow)
+                sequence_prev = sequence
 
 
 @torch.no_grad()
@@ -99,7 +106,8 @@ def create_kitti_submission(
         os.makedirs(output_path)
 
     for test_id in range(len(test_dataset)):
-        image1, image2, (frame_id, ) = test_dataset[test_id]
+        imgs, (frame_id, ) = test_dataset[test_id]
+        image1, image2 = imgs
         padder = InputPadder(image1.shape, mode='kitti')
         image1, image2 = padder.pad(
             image1[None].to(DEVICE), image2[None].to(DEVICE))
@@ -122,7 +130,8 @@ def validate_chairs(model, mixed_precision=False, **kwargs):
 
     val_dataset = datasets.FlyingChairs(split='validation')
     for val_id in range(len(val_dataset)):
-        image1, image2, flow_gt, _ = val_dataset[val_id]
+        imgs, flow_gt, _ = val_dataset[val_id]
+        image1, image2 = imgs
         image1 = image1[None].to(DEVICE)
         image2 = image2[None].to(DEVICE)
 
@@ -156,7 +165,11 @@ def validate_things(model, mixed_precision=False, **kwargs):
         print(f'{dstype} length', len(val_dataset))
 
         for val_id in range(len(val_dataset)):
-            image1, image2, flow_gt, valid = val_dataset[val_id]
+            imgs, flow_gts, valids = val_dataset[val_id]
+            image1, image2 = imgs
+            flow_gt = flow_gts[0]
+            valid = valids[0]
+
             image1 = image1[None].to(DEVICE)
             image2 = image2[None].to(DEVICE)
 
@@ -224,6 +237,7 @@ def validate_things(model, mixed_precision=False, **kwargs):
     return results
 
 
+# TODO do we need seq support here?
 @torch.no_grad()
 def validate_sintel(model, mixed_precision=False, **kwargs):
     """ Peform validation using the Sintel (train) split """
@@ -231,26 +245,35 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
     best = kwargs.get("best", {"clean-epe": 1e8, "final-epe": 1e8})
     results = {}
     for dstype in ['clean', 'final']:
-        val_dataset = datasets.MpiSintel(split='training', dstype=dstype)
+        val_dataset = datasets.MpiSintel(
+            split='training',
+            seq_len=2,
+            dstype=dstype
+        )
         epe_list = []
         rho_list = []
         info = {"sradius": None, "cached_result": None}
 
         for val_id in range(len(val_dataset)):
-            image1, image2, flow_gt, _ = val_dataset[val_id]
-            image1 = image1[None].to(DEVICE)
-            image2 = image2[None].to(DEVICE)
+            imgs, flow_gts, _ = val_dataset[val_id]
+            for j in range(imgs.shape[1] - 1):
+                image1 = imgs[:, j, ...]
+                image2 = imgs[:, j+1, ...]
+                flow_gt = flow_gts[:, j, ...]
 
-            padder = InputPadder(image1.shape)
-            image1, image2 = padder.pad(image1, image2)
+                image1 = image1[None].to(DEVICE)
+                image2 = image2[None].to(DEVICE)
 
-            with autocast(enabled=mixed_precision):
-                flow_low, flow_pr, info = model(image1, image2, **kwargs)
-            flow = padder.unpad(flow_pr[0]).cpu()
+                padder = InputPadder(image1.shape)
+                image1, image2 = padder.pad(image1, image2)
 
-            epe = torch.sum((flow - flow_gt)**2, dim=0).sqrt()
-            epe_list.append(epe.view(-1).numpy())
-            rho_list.append(info['sradius'].mean().item())
+                with autocast(enabled=mixed_precision):
+                    flow_low, flow_pr, info = model(image1, image2, **kwargs)
+                flow = padder.unpad(flow_pr[0]).cpu()
+
+                epe = torch.sum((flow - flow_gt)**2, dim=0).sqrt()
+                epe_list.append(epe.view(-1).numpy())
+                rho_list.append(info['sradius'].mean().item())
 
         epe_all = np.concatenate(epe_list)
         epe = np.mean(epe_all)
@@ -259,8 +282,7 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
         px5 = np.mean(epe_all < 5) * 100
 
         best[dstype+'-epe'] = min(epe, best[dstype+'-epe'])
-        print(
-            f"Validation ({dstype}) EPE: {epe:.3f} ({best[dstype+'-epe']:.3f}), 1px: {px1:.2f}, 3px: {px3:.2f}, 5px: {px5:.2f}")
+        print(f"Validation ({dstype}) EPE: {epe:.3f} ({best[dstype+'-epe']:.3f}), 1px: {px1:.2f}, 3px: {px3:.2f}, 5px: {px5:.2f}")
         results[dstype] = np.mean(epe_list)
 
         if np.mean(rho_list) != 0:
@@ -278,7 +300,11 @@ def validate_kitti(model, mixed_precision=False, **kwargs):
 
     out_list, epe_list, rho_list = [], [], []
     for val_id in range(len(val_dataset)):
-        image1, image2, flow_gt, valid_gt = val_dataset[val_id]
+        imgs, flow_gts, valid_gts = val_dataset[val_id]
+        image1, image2 = imgs
+        flow_gt = flow_gts[0]
+        valid_gt = valid_gts[0]
+
         image1 = image1[None].to(DEVICE)
         image2 = image2[None].to(DEVICE)
 
