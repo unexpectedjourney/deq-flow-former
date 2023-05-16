@@ -139,7 +139,8 @@ class MemoryDecoderLayer(nn.Module):
             2. We assume the upper-left point to be [0, 0], instead of letting center of upper-left patch to be [0, 0]
         """
         x_global, k, v = self.cross_attend(
-            query, key, value, memory, coords1, self.patch_size, size_h3w3)
+            query, key, value, memory, coords1, self.patch_size, size_h3w3
+        )
         B, C, H1, W1 = size
         C = self.cfg.query_latent_dim
         x_global = x_global.view(B, H1, W1, C).permute(0, 3, 1, 2)

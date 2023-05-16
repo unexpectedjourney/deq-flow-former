@@ -120,7 +120,6 @@ class GMAUpdateBlock(nn.Module):
                               input_dim=128+hidden_dim+hidden_dim)
         self.flow_head = FlowHead(hidden_dim, hidden_dim=256)
 
-        
         self.aggregator = Aggregate(
             args=self.args, dim=128, dim_head=128, heads=1)
 

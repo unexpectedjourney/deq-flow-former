@@ -258,8 +258,12 @@ class CostPerceiverEncoder(nn.Module):
         super(CostPerceiverEncoder, self).__init__()
         self.cfg = cfg
         self.patch_size = cfg.patch_size
-        self.patch_embed = PatchEmbed(in_chans=self.cfg.cost_heads_num,
-                                      patch_size=self.patch_size, embed_dim=cfg.cost_latent_input_dim, pe=cfg.pe)
+        self.patch_embed = PatchEmbed(
+            in_chans=self.cfg.cost_heads_num,
+            patch_size=self.patch_size,
+            embed_dim=cfg.cost_latent_input_dim,
+            pe=cfg.pe
+        )
 
         self.depth = cfg.encoder_depth
 
@@ -292,7 +296,8 @@ class CostPerceiverEncoder(nn.Module):
     def forward(self, cost_volume, data, context=None):
         B, heads, H1, W1, H2, W2 = cost_volume.shape
         cost_maps = cost_volume.permute(0, 2, 3, 1, 4, 5).contiguous().view(
-            B*H1*W1, self.cfg.cost_heads_num, H2, W2)
+            B*H1*W1, self.cfg.cost_heads_num, H2, W2
+        )
         data['cost_maps'] = cost_maps
 
         if self.cost_scale_aug is not None:
@@ -312,18 +317,22 @@ class CostPerceiverEncoder(nn.Module):
             x = layer(x)
             if self.cfg.vertical_conv:
                 # B, H1*W1, K, D -> B, K, D, H1*W1 -> B*K, D, H1, W1
-                x = x.view(B, H1*W1, self.cfg.cost_latent_token_num, -1).permute(0,
-                                                                                 3, 1, 2).reshape(B*self.cfg.cost_latent_token_num, -1, H1, W1)
+                x = x.view(B, H1*W1, self.cfg.cost_latent_token_num, -1).permute(
+                    0, 3, 1, 2
+                ).reshape(B*self.cfg.cost_latent_token_num, -1, H1, W1)
                 x = self.vertical_encoder_layers[idx](x)
                 # B*K, D, H1, W1 -> B, K, D, H1*W1 -> B, H1*W1, K, D
-                x = x.view(B, self.cfg.cost_latent_token_num, -1, H1*W1).permute(0,
-                                                                                 2, 3, 1).reshape(B*H1*W1, self.cfg.cost_latent_token_num, -1)
+                x = x.view(B, self.cfg.cost_latent_token_num, -1, H1*W1).permute(
+                    0, 2, 3, 1
+                ).reshape(B*H1*W1, self.cfg.cost_latent_token_num, -1)
             else:
-                x = x.view(B, H1*W1, self.cfg.cost_latent_token_num, -1).permute(0,
-                                                                                 2, 1, 3).reshape(B*self.cfg.cost_latent_token_num, H1*W1, -1)
+                x = x.view(B, H1*W1, self.cfg.cost_latent_token_num, -1).permute(
+                    0, 2, 1, 3
+                ).reshape(B*self.cfg.cost_latent_token_num, H1*W1, -1)
                 x = self.vertical_encoder_layers[idx](x, (H1, W1), context)
-                x = x.view(B, self.cfg.cost_latent_token_num, H1*W1, -1).permute(0,
-                                                                                 2, 1, 3).reshape(B*H1*W1, self.cfg.cost_latent_token_num, -1)
+                x = x.view(B, self.cfg.cost_latent_token_num, H1*W1, -1).permute(
+                    0, 2, 1, 3
+                ).reshape(B*H1*W1, self.cfg.cost_latent_token_num, -1)
 
         if self.cfg.cost_encoder_res is True:
             x = x + short_cut
