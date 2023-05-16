@@ -160,7 +160,8 @@ def visualize_validation_results(model, data_blob, logger, img_name, steps, args
     model.eval()
     with torch.no_grad():
         imgs, _, _ = data_blob
-        image1, image2 = imgs
+        image1 = imgs[:, 0, ...]
+        image2 = imgs[:, 1, ...]
         image1 = image1.to(DEVICE)
         image2 = image2.to(DEVICE)
 

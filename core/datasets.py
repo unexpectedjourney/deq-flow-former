@@ -28,6 +28,7 @@ class FlowDataset(data.Dataset):
         self.flow_list = []
         self.image_list = []
         self.extra_info = []
+        self.seq_len = seq_len
 
     def fix_colors(self, imgs):
         if len(imgs[0].shape) == 2:

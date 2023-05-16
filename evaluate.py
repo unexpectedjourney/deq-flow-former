@@ -45,9 +45,9 @@ def create_sintel_submission(
                 flow_prev = None
                 fixed_point = None
 
-            for j in range(imgs.shape[1] - 1):
-                image1 = imgs[:, j, ...]
-                image2 = imgs[:, j+1, ...]
+            for j in range(imgs.shape[0] - 1):
+                image1 = imgs[j, ...]
+                image2 = imgs[j+1, ...]
 
                 padder = InputPadder(image1.shape)
                 image1, image2 = padder.pad(
@@ -107,7 +107,9 @@ def create_kitti_submission(
 
     for test_id in range(len(test_dataset)):
         imgs, (frame_id, ) = test_dataset[test_id]
-        image1, image2 = imgs
+        image1 = imgs[0, ...]
+        image2 = imgs[1, ...]
+
         padder = InputPadder(image1.shape, mode='kitti')
         image1, image2 = padder.pad(
             image1[None].to(DEVICE), image2[None].to(DEVICE))
@@ -131,7 +133,8 @@ def validate_chairs(model, mixed_precision=False, **kwargs):
     val_dataset = datasets.FlyingChairs(split='validation')
     for val_id in range(len(val_dataset)):
         imgs, flow_gt, _ = val_dataset[val_id]
-        image1, image2 = imgs
+        image1 = imgs[0, ...]
+        image2 = imgs[1, ...]
         image1 = image1[None].to(DEVICE)
         image2 = image2[None].to(DEVICE)
 
@@ -166,7 +169,8 @@ def validate_things(model, mixed_precision=False, **kwargs):
 
         for val_id in range(len(val_dataset)):
             imgs, flow_gts, valids = val_dataset[val_id]
-            image1, image2 = imgs
+            image1 = imgs[0, ...]
+            image2 = imgs[1, ...]
             flow_gt = flow_gts[0]
             valid = valids[0]
 
@@ -256,10 +260,10 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
 
         for val_id in range(len(val_dataset)):
             imgs, flow_gts, _ = val_dataset[val_id]
-            for j in range(imgs.shape[1] - 1):
-                image1 = imgs[:, j, ...]
-                image2 = imgs[:, j+1, ...]
-                flow_gt = flow_gts[:, j, ...]
+            for j in range(imgs.shape[0] - 1):
+                image1 = imgs[j, ...]
+                image2 = imgs[j+1, ...]
+                flow_gt = flow_gts[j, ...]
 
                 image1 = image1[None].to(DEVICE)
                 image2 = image2[None].to(DEVICE)
@@ -301,7 +305,8 @@ def validate_kitti(model, mixed_precision=False, **kwargs):
     out_list, epe_list, rho_list = [], [], []
     for val_id in range(len(val_dataset)):
         imgs, flow_gts, valid_gts = val_dataset[val_id]
-        image1, image2 = imgs
+        image1 = imgs[0, ...]
+        image2 = imgs[1, ...]
         flow_gt = flow_gts[0]
         valid_gt = valid_gts[0]
 
