@@ -59,16 +59,17 @@ class FlowDataset(data.Dataset):
         flows = []
         valids = []
 
-        for i in range(self.seq_len):
+        for i in range(self.seq_len-1):
             valid = None
             flow_path = self.flow_list[index+i]
-            # print(flow_path, self.sparse)
             if self.sparse:
                 flow, valid = frame_utils.readFlowKITTI(flow_path)
             else:
                 flow = frame_utils.read_gen(flow_path)
             flows.append(flow)
             valids.append(valid)
+        flows.append(flow)
+        valids.append(valid)
 
         imgs = [frame_utils.read_gen(self.image_list[index][i]) for i in range(self.seq_len)]
         imgs = [np.array(img).astype(np.uint8) for img in imgs]
@@ -271,7 +272,7 @@ class HD1K(FlowDataset):
             seq_ix += 1
 
 
-def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
+def fetch_dataloader(args, seq_len=2, TRAIN_DS='C+T+K+S+H'):
     """ Create the data loader for the corresponding trainign set """
 
     if args.stage == 'chairs':
@@ -300,8 +301,12 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             'do_flip': True
         }
         things = FlyingThingsSubset(aug_params)
-        sintel_clean = MpiSintel(aug_params, split='training', dstype='clean')
-        sintel_final = MpiSintel(aug_params, split='training', dstype='final')
+        sintel_clean = MpiSintel(
+            aug_params, split='training', dstype='clean', seq_len=seq_len
+        )
+        sintel_final = MpiSintel(
+            aug_params, split='training', dstype='final', seq_len=seq_len
+        )
         # train_dataset = 100*sintel_clean + 100*sintel_final
 
         if TRAIN_DS == 'C+T+K+S+H':

@@ -14,6 +14,7 @@ from timm.models.layers import DropPath
 
 from .gru import BasicUpdateBlock, GMAUpdateBlock
 from .gma import Attention
+from .refiner import Refiner
 
 from core.deq import get_deq
 from core.deq.norm import apply_weight_norm, reset_weight_norm
@@ -219,6 +220,7 @@ class MemoryDecoder(nn.Module):
 
         DEQ = get_deq(deq_cfg)
         self.deq = DEQ(deq_cfg)
+        self.refiner = Refiner(cfg, dim=128, heads=1, max_pos_size=160, dim_head=128)
 
     def upsample_flow(self, flow, mask):
         """ Upsample flow field [H/8, W/8, 2] -> [H, W, 2] using convex combination """
@@ -277,12 +279,30 @@ class MemoryDecoder(nn.Module):
             net = torch.tanh(net)
             inp = torch.relu(inp)
 
+        saved_inp = inp.clone().detach()
+
         size = net.shape
         key = None
         value = None
         if cached_result:
-            net, flow_pred_prev = cached_result
-            coords1 = coords0 + flow_pred_prev
+            # net, flow_pred_prev = cached_result
+            prev_net = cached_result.get("net")
+            prev_inp = cached_result.get("inp")
+            prev_flow = cached_result.get("flow")
+            prev_frame = cached_result.get("prev_frame")
+            curr_frame = cached_result.get("curr_frame")
+
+            if self.cfg.refiner:
+                with autocast(enabled=self.deq_cfg.mixed_precision):
+                    flow_init, net, inp = self.refiner(
+                        prev_frame,
+                        curr_frame,
+                        prev_flow,
+                        prev_net,
+                        prev_inp,
+                    )
+
+            coords1 = coords0 + prev_flow
 
         if flow_init is not None:
             coords1 = coords1 + flow_init
@@ -337,7 +357,14 @@ class MemoryDecoder(nn.Module):
             flow_predictions = [self._decode(z, coords0) for z in z_out]
 
         if self.training:
-            return flow_predictions, info
+            (net, coords1), flow_up = z_out[-1], flow_predictions[-1]
+            return flow_predictions, info, {
+                "cached_result": {
+                    "net": net.clone().detach(),
+                    "inp": saved_inp,
+                    "flow": (coords1 - coords0)
+                }
+            }
         else:
             (net, coords1), flow_up = z_out[-1], flow_predictions[-1]
             return coords1-coords0, flow_up, {

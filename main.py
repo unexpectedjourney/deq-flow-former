@@ -239,7 +239,7 @@ def train_once(cfg, args):
     # if args.stage != 'chairs' and not args.active_bn:
     #     model.module.freeze_bn()
 
-    train_loader = datasets.fetch_dataloader(args)
+    train_loader = datasets.fetch_dataloader(args, seq_len=args.seq_len)
 
     aug_params = {
         'crop_size': args.image_size,
@@ -270,6 +270,7 @@ def train_once(cfg, args):
 
         for i_batch, data_blob in enumerate(tqdm(train_loader)):
             imgs, flows, valids = data_blob
+            cached_result = {}
 
             for j in range(imgs.shape[1]-1):
                 optimizer.zero_grad()
@@ -296,8 +297,14 @@ def train_once(cfg, args):
 
                 fc_loss = partial(fixed_point_correction, gamma=args.gamma)
 
-                # TODO extranct the flow_init, net, corr, etc
-                flow_predictions, info = model(image1, image2)
+                flow_predictions, info, saved_data = model(
+                    image1, image2, cached_result=cached_result
+                )
+                cached_result = saved_data.get("cached_result", {})
+
+                cached_result["prev_frame"] = image1.clone().detach()
+                cached_result["curr_frame"] = image2.clone().detach()
+
                 flow_loss, epe = fc_loss(flow_predictions, flow, valid)
 
                 batch_metrics = process_metrics(epe, info)
@@ -550,6 +557,7 @@ if __name__ == '__main__':
                         default=500, help="timing interval")
 
     parser.add_argument('--gma', action='store_true', help='use gma')
+    parser.add_argument('--seq_len', type=int, default=2)
 
     parser.add_argument('--lr', type=float, default=0.00002)
     parser.add_argument('--num_steps', type=int, default=100000)

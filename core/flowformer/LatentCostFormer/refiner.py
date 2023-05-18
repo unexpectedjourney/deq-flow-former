@@ -3,10 +3,14 @@ import torch.nn as nn
 from torch import einsum
 from einops import rearrange
 
+from ..encoders import twins_svt_large
+from .cnn import BasicEncoder
+
 
 class Refiner(nn.Module):
-    def __init__(self, dim, max_pos_side=100, heads=4, dim_head=128):
+    def __init__(self, cfg, dim, max_pos_size=100, heads=4, dim_head=128):
         super(Refiner, self).__init__()
+        self.cfg = cfg
         self.heads = heads
         self.scale = dim_head ** -0.5
         inner_dim = heads * dim_head
@@ -15,10 +19,19 @@ class Refiner(nn.Module):
         self.to_k = nn.Conv2d(dim, inner_dim, 1, bias=False)
         self.to_v = nn.Conv2d(dim, inner_dim * 2, 1, bias=False)
 
-        self.reduce_size = nn.Sequential(
-            nn.Conv2d(2, 64, 3, stride=2, padding=1),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1),
-            nn.Conv2d(128, 128, 3, stride=2, padding=1),
+        self.reduce_image_dims = nn.Sequential(
+            nn.Conv2d(256, 256, 1, stride=1, padding=0),
+            nn.Conv2d(256, 128, 1, stride=1, padding=0),
+        )
+
+        self.increase_flow_dims = nn.Sequential(
+            nn.Conv2d(2, 128, 1, stride=1, padding=0),
+            nn.Conv2d(128, 128, 1, stride=1, padding=0),
+        )
+
+        self.reduce_flow_dims = nn.Sequential(
+            nn.Conv2d(128, 128, 1, stride=1, padding=0),
+            nn.Conv2d(128, 2, 1, stride=1, padding=0),
         )
 
         self.to_v_flow = nn.Conv2d(dim, inner_dim, 1, bias=False)
@@ -38,11 +51,50 @@ class Refiner(nn.Module):
             self.project_net = None
             self.project_inp = None
 
-    def prepare_flow(self, flow):
-        flow = self.reduce_size(flow)
-        return flow
+        if cfg.fnet == 'twins':
+            self.feat_encoder = twins_svt_large(pretrained=self.cfg.pretrain)
+        elif cfg.fnet == 'basicencoder':
+            self.feat_encoder = BasicEncoder(
+                output_dim=256, norm_fn='instance')
+        else:
+            exit()
+
+        self.channel_convertor = nn.Conv2d(
+            cfg.encoder_latent_dim,
+            cfg.encoder_latent_dim,
+            1,
+            padding=0,
+            bias=False
+        )
+
+    def precess_v(self, attn, v, heads, h, w, to_v, project_fn):
+        v = to_v(v)
+        v = rearrange(v, 'b (h d) x y -> b h (x y) d', h=heads)
+        out = einsum('b h i j, b h j d -> b h i d', attn, v)
+        out = rearrange(out, 'b h (x y) d -> b (h d) x y', x=h, y=w)
+
+        if project_fn is not None:
+            out = project_fn(out)
+
+        return out
+
+    def prepare_image_feats(self, frame_s, frame_t):
+        imgs = torch.cat([frame_s, frame_t], dim=0)
+        feats = self.feat_encoder(imgs)
+        feats = self.channel_convertor(feats)
+        B = feats.shape[0] // 2
+
+        feat_s = feats[:B]
+        feat_t = feats[B:]
+        feat_s = self.reduce_image_dims(feat_s)
+        feat_t = self.reduce_image_dims(feat_t)
+
+        return feat_t, feat_s
 
     def forward(self, prev_frame, curr_frame, prev_flow, prev_net, prev_inp):
+        prev_frame, curr_frame = self.prepare_image_feats(prev_frame, curr_frame)
+        prev_flow_features = self.increase_flow_dims(prev_flow)
+
         heads, _, _, h, w = self.heads, *prev_frame.shape
 
         q = self.to_q(curr_frame)
@@ -56,29 +108,21 @@ class Refiner(nn.Module):
         sim = rearrange(sim, 'b h x y u v -> b h (x y) (u v)')
         attn = sim.softmax(dim=-1)
 
-        prev_flow = self.prepare_flow(prev_flow)
+        out_flow = self.precess_v(
+            attn, prev_flow_features, heads, h, w, self.to_v_flow,
+            self.project_flow
+        )
+        out_flow = self.reduce_flow_dims(out_flow)
 
-        v_flow = self.to_v_flow(prev_flow)
-        v_net = self.to_v_net(prev_net)
-        v_inp = self.to_v_inp(prev_inp)
+        out_net = self.precess_v(
+            attn, prev_net, heads, h, w, self.to_v_net,
+            self.project_net
+        )
 
-        v_flow = rearrange(v_flow, 'b (h d) x y -> b h (x y) d', h=heads)
-        v_net = rearrange(v_net, 'b (h d) x y -> b h (x y) d', h=heads)
-        v_inp = rearrange(v_inp, 'b (h d) x y -> b h (x y) d', h=heads)
-
-        out_flow = einsum('b h i j, b h j d -> b h i d', attn, v_flow)
-        out_flow = rearrange(out_flow, 'b h (x y) d -> b (h d) x y', x=h, y=w)
-
-        out_net = einsum('b h i j, b h j d -> b h i d', attn, v_net)
-        out_net = rearrange(out_net, 'b h (x y) d -> b (h d) x y', x=h, y=w)
-
-        out_inp = einsum('b h i j, b h j d -> b h i d', attn, v_inp)
-        out_inp = rearrange(out_inp, 'b h (x y) d -> b (h d) x y', x=h, y=w)
-
-        if self.project is not None:
-            out_flow = self.project_flow(out_flow)
-            out_net = self.project_net(out_net)
-            out_inp = self.project_inp(out_inp)
+        out_inp = self.precess_v(
+            attn, prev_inp, heads, h, w, self.to_v_inp,
+            self.project_inp
+        )
 
         out_flow = prev_flow + self.gamma_flow * out_flow
         out_net = prev_net + self.gamma_net * out_net
