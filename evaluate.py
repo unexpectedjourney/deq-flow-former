@@ -270,9 +270,17 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
             if inner_val_id >= len(val_dataset):
                 break
             imgs, flow_gts, _ = val_dataset[inner_val_id]
+
+            cached_result = None
             for j in range(imgs.shape[0] - 1):
                 if j:
                     jump_margin += 1
+                    net, flow_pred_low = info['cached_result']
+                    flow_pred_low = forward_interpolate(
+                        flow_pred_low[0]
+                    )[None].to(DEVICE)
+                    cached_result = (net, flow_pred_low)
+
                 image1 = imgs[j, ...]
                 image2 = imgs[j+1, ...]
                 flow_gt = flow_gts[j, ...]
@@ -284,7 +292,12 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
                 image1, image2 = padder.pad(image1, image2)
 
                 with autocast(enabled=mixed_precision):
-                    flow_low, flow_pr, info = model(image1, image2, **kwargs)
+                    flow_low, flow_pr, info = model(
+                        image1,
+                        image2,
+                        cached_result=cached_result,
+                        **kwargs
+                    )
                 flow = padder.unpad(flow_pr[0]).cpu()
 
                 epe = torch.sum((flow - flow_gt)**2, dim=0).sqrt()
