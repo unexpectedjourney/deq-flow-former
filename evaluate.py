@@ -51,7 +51,7 @@ def create_sintel_submission(
                 fixed_point = None
 
             for j in range(imgs.shape[0] - 1):
-                if not j:
+                if j:
                     jump_margin += 1
                 image1 = imgs[j, ...]
                 image2 = imgs[j+1, ...]
@@ -271,7 +271,7 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
                 break
             imgs, flow_gts, _ = val_dataset[inner_val_id]
             for j in range(imgs.shape[0] - 1):
-                if not j:
+                if j:
                     jump_margin += 1
                 image1 = imgs[j, ...]
                 image2 = imgs[j+1, ...]
