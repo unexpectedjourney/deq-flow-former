@@ -61,7 +61,7 @@ class FlowDataset(data.Dataset):
 
         for i in range(self.seq_len):
             valid = None
-            flow_path = self.flow_list[index+i]
+            flow_path = self.flow_list[index][i]
             # print(flow_path, self.sparse)
             if self.sparse:
                 flow, valid = frame_utils.readFlowKITTI(flow_path)
@@ -129,16 +129,24 @@ class MpiSintel(FlowDataset):
 
         for scene in os.listdir(image_root):
             image_list = sorted(glob(osp.join(image_root, scene, '*.png')))
+            flow_list = []
+            if not self.is_test:
+                self.flow_list += sorted(
+                    glob(osp.join(flow_root, scene, '*.flo'))
+                )
             for i in range(len(image_list)-seq_len+1):
                 self.image_list += [[image_list[i+k] for k in range(seq_len)]]
                 self.extra_info += [(scene, i)]  # scene and frame_id
                 # self.image_list = self.image_list[:8]
                 # self.extra_info = self.extra_info[:8]
 
-            if split != 'test':
-                self.flow_list += sorted(
-                    glob(osp.join(flow_root, scene, '*.flo'))
-                )
+                if not self.is_test:
+                    inner_flow_list = []
+                    for k in range(seq_len-1):
+                        flow = flow_list[i+k]
+                        inner_flow_list.append(flow)
+                    inner_flow_list.append(flow)
+                    self.flow_list += [inner_flow_list]
                 # self.flow_list = self.flow_list[:8]
 
 
