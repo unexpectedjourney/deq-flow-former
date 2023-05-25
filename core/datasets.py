@@ -131,7 +131,7 @@ class MpiSintel(FlowDataset):
             image_list = sorted(glob(osp.join(image_root, scene, '*.png')))
             flow_list = []
             if not self.is_test:
-                self.flow_list += sorted(
+                flow_list += sorted(
                     glob(osp.join(flow_root, scene, '*.flo'))
                 )
             for i in range(len(image_list)-seq_len+1):
