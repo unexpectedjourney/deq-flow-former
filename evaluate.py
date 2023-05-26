@@ -34,18 +34,25 @@ def create_sintel_submission(
 ):
     """ Create submission for the Sintel leaderboard """
     model.eval()
+    seq_len = 2
     for dstype in ['clean', 'final']:
+        jump_margin = 0
         test_dataset = datasets.MpiSintel(
-            split='test', aug_params=None, dstype=dstype)
+            split='test', aug_params=None, seq_len=seq_len, dstype=dstype)
 
         sequence_prev, flow_prev, fixed_point = None, None, None
         for test_id in range(len(test_dataset)):
-            imgs, (sequence, frame) = test_dataset[test_id]
+            inner_test_id = test_id + jump_margin
+            if inner_test_id >= len(test_dataset):
+                break
+            imgs, (sequence, frame) = test_dataset[test_id + jump_margin]
             if sequence != sequence_prev:
                 flow_prev = None
                 fixed_point = None
 
             for j in range(imgs.shape[0] - 1):
+                if j:
+                    jump_margin += 1
                 image1 = imgs[j, ...]
                 image2 = imgs[j+1, ...]
 
@@ -84,7 +91,6 @@ def create_sintel_submission(
                     fixed_point = (net, flow_pred_low)
 
                 output_dir = os.path.join(output_path, dstype, sequence)
-                # TODO overlap will be here
                 output_file = os.path.join(output_dir, f'frame{(frame+1+j):04d}.flo')
 
                 if not os.path.exists(output_dir):
@@ -241,17 +247,18 @@ def validate_things(model, mixed_precision=False, **kwargs):
     return results
 
 
-# TODO do we need seq support here?
 @torch.no_grad()
 def validate_sintel(model, mixed_precision=False, **kwargs):
     """ Peform validation using the Sintel (train) split """
     model.eval()
     best = kwargs.get("best", {"clean-epe": 1e8, "final-epe": 1e8})
     results = {}
+    seq_len = 2
     for dstype in ['clean', 'final']:
+        jump_margin = 0
         val_dataset = datasets.MpiSintel(
             split='training',
-            seq_len=2,
+            seq_len=seq_len,
             dstype=dstype
         )
         epe_list = []
@@ -259,8 +266,21 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
         info = {"sradius": None, "cached_result": None}
 
         for val_id in range(len(val_dataset)):
-            imgs, flow_gts, _ = val_dataset[val_id]
+            inner_val_id = val_id + jump_margin
+            if inner_val_id >= len(val_dataset):
+                break
+            imgs, flow_gts, _ = val_dataset[inner_val_id]
+
+            cached_result = None
             for j in range(imgs.shape[0] - 1):
+                if j:
+                    jump_margin += 1
+                    net, flow_pred_low = info['cached_result']
+                    flow_pred_low = forward_interpolate(
+                        flow_pred_low[0]
+                    )[None].to(DEVICE)
+                    cached_result = (net, flow_pred_low)
+
                 image1 = imgs[j, ...]
                 image2 = imgs[j+1, ...]
                 flow_gt = flow_gts[j, ...]
@@ -272,7 +292,12 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
                 image1, image2 = padder.pad(image1, image2)
 
                 with autocast(enabled=mixed_precision):
-                    flow_low, flow_pr, info = model(image1, image2, **kwargs)
+                    flow_low, flow_pr, info = model(
+                        image1,
+                        image2,
+                        cached_result=cached_result,
+                        **kwargs
+                    )
                 flow = padder.unpad(flow_pr[0]).cpu()
 
                 epe = torch.sum((flow - flow_gt)**2, dim=0).sqrt()
