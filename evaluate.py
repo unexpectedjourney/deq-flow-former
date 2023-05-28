@@ -1,4 +1,5 @@
 import os
+import time
 
 import core.datasets as datasets
 import numpy as np
@@ -255,6 +256,8 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
     results = {}
     seq_len = 2
     for dstype in ['clean', 'final']:
+        used_time = []
+        used_iters = []
         jump_margin = 0
         val_dataset = datasets.MpiSintel(
             split='training',
@@ -292,12 +295,15 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
                 image1, image2 = padder.pad(image1, image2)
 
                 with autocast(enabled=mixed_precision):
+                    start_point = time.time()
                     flow_low, flow_pr, info = model(
                         image1,
                         image2,
                         cached_result=cached_result,
                         **kwargs
                     )
+                    used_time.append(time.time() - start_point)
+                    used_iters.append(info["nstep"])
                 flow = padder.unpad(flow_pr[0]).cpu()
 
                 epe = torch.sum((flow - flow_gt)**2, dim=0).sqrt()
@@ -311,6 +317,9 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
         px5 = np.mean(epe_all < 5) * 100
 
         best[dstype+'-epe'] = min(epe, best[dstype+'-epe'])
+        print(f"({dstype}-test) Mean update time value: {np.mean(used_time)}")
+        print(f"({dstype}-test) Mean update iters value: {np.mean(used_iters)}")
+
         print(f"Validation ({dstype}) EPE: {epe:.3f} ({best[dstype+'-epe']:.3f}), 1px: {px1:.2f}, 3px: {px3:.2f}, 5px: {px5:.2f}")
         results[dstype] = np.mean(epe_list)
 
