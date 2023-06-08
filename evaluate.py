@@ -255,6 +255,7 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
     best = kwargs.get("best", {"clean-epe": 1e8, "final-epe": 1e8})
     results = {}
     seq_len = 2
+    epe_step_completion = [[] for _ in range(100)]
     for dstype in ['clean', 'final']:
         used_time = []
         used_iters = []
@@ -303,12 +304,19 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
                         **kwargs
                     )
                     used_time.append(time.time() - start_point)
-                    used_iters.append(info["nstep"])
+                    used_iters.append(info["nstep"].cpu().numpy()[0])
                 flow = padder.unpad(flow_pr[0]).cpu()
 
                 epe = torch.sum((flow - flow_gt)**2, dim=0).sqrt()
                 epe_list.append(epe.view(-1).numpy())
                 rho_list.append(info['sradius'].mean().item())
+
+                flow_steps = info["flow_steps"]
+                for k, pred_flow in enumerate(flow_steps):
+                    flow = padder.unpad(pred_flow[0]).cpu()
+                    epe = torch.sum((flow - flow_gt)**2, dim=0).sqrt()
+                    epe = epe.view(-1).numpy()
+                    epe_step_completion[k].append(epe)
 
         epe_all = np.concatenate(epe_list)
         epe = np.mean(epe_all)
@@ -325,6 +333,9 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
 
         if np.mean(rho_list) != 0:
             print(f"Spectral radius ({dstype}): {np.mean(rho_list)}")
+
+    epe_step_completion = [np.mean(el) if len(el) else None for el in epe_step_completion]
+    print("EPE step completion:", epe_step_completion)
 
     return results
 

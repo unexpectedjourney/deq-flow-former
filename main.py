@@ -404,12 +404,12 @@ def train_once(cfg, args):
 
 
 def val(cfg, args):
-    flowformer = build_flowformer(args)
+    flowformer = build_flowformer(cfg, args)
     model = nn.DataParallel(flowformer, device_ids=args.gpus)
     print(f"Parameter Count: {count_parameters(model):.3}M")
 
     if args.restore_ckpt is not None:
-        model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
+        model.load_state_dict(torch.load(args.restore_ckpt, map_location=torch.device('cpu')), strict=False)
         print(f'Load from {args.restore_ckpt}')
 
     model.to(DEVICE)
@@ -448,7 +448,7 @@ def test(cfg, args):
     print(f"Parameter Count: {count_parameters(model):.3}M")
 
     if args.restore_ckpt is not None:
-        model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
+        model.load_state_dict(torch.load(args.restore_ckpt, map_location=torch.device('cpu')), strict=False)
 
     model.to(DEVICE)
     model.eval()

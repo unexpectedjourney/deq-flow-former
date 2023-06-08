@@ -296,6 +296,9 @@ class MemoryDecoder(nn.Module):
         if self.deq_cfg.wnorm:
             reset_weight_norm(self.update_block)  # Reset weights for WN
 
+        flow_steps = []
+        net_steps = []
+
         def func(net, c):
             c = c.detach()
 
@@ -324,7 +327,8 @@ class MemoryDecoder(nn.Module):
 
             # flow = delta_flow
             new_c = c + delta_flow
-
+            flow_steps.append(new_c)
+            net_steps.append(new_net)
             return new_net, new_c
 
         deq_func = DEQWrapper(func, (net, coords1))
@@ -340,9 +344,12 @@ class MemoryDecoder(nn.Module):
             return flow_predictions, info
         else:
             (net, coords1), flow_up = z_out[-1], flow_predictions[-1]
+
+            flow_steps = [self._decode(z, coords0) for z in zip(net_steps, flow_steps)]
             return coords1-coords0, flow_up, {
                 "cached_result": (net, coords1 - coords0),
                 "sradius": info['sradius'],
                 "flow_predictions": flow_predictions,
-                "nstep": info['nstep']
+                "nstep": info['nstep'],
+                "flow_steps": flow_steps,
             }
