@@ -316,7 +316,7 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
                     flow = padder.unpad(pred_flow[0]).cpu()
                     epe = torch.sum((flow - flow_gt)**2, dim=0).sqrt()
                     epe = epe.view(-1).numpy()
-                    epe_step_completion[k].append(epe)
+                    epe_step_completion[k].append(np.mean(epe))
                 epe_step_completion = [[np.mean(el)] if len(el) else [] for el in epe_step_completion]
 
         epe_all = np.concatenate(epe_list)
