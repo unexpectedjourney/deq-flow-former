@@ -4,6 +4,7 @@ import time
 import core.datasets as datasets
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from core.utils import frame_utils
 from core.utils.utils import InputPadder, forward_interpolate
@@ -255,7 +256,9 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
     best = kwargs.get("best", {"clean-epe": 1e8, "final-epe": 1e8})
     results = {}
     seq_len = 2
-    epe_step_completion = [[] for _ in range(100)]
+    epe_step_completion = [0. for _ in range(100)]
+    flow_passed = [0 for _ in range(100)]
+
     for dstype in ['clean', 'final']:
         used_time = []
         used_iters = []
@@ -269,7 +272,7 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
         rho_list = []
         info = {"sradius": None, "cached_result": None}
 
-        for val_id in range(len(val_dataset)):
+        for val_id in tqdm(range(len(val_dataset))):
             inner_val_id = val_id + jump_margin
             if inner_val_id >= len(val_dataset):
                 break
@@ -316,8 +319,9 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
                     flow = padder.unpad(pred_flow[0]).cpu()
                     epe = torch.sum((flow - flow_gt)**2, dim=0).sqrt()
                     epe = epe.view(-1).numpy()
-                    epe_step_completion[k].append(np.mean(epe))
-                epe_step_completion = [[np.mean(el)] if len(el) else [] for el in epe_step_completion]
+
+                    epe_step_completion[k] += np.mean(epe)
+                    flow_passed[k] += 1
 
         epe_all = np.concatenate(epe_list)
         epe = np.mean(epe_all)
@@ -336,6 +340,12 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
             print(f"Spectral radius ({dstype}): {np.mean(rho_list)}")
 
     epe_step_completion = [np.mean(el) if len(el) else None for el in epe_step_completion]
+    for i in range(len(epe_step_completion)):
+        if flow_passed[i]:
+            epe_step_completion[i] /= flow_passed[i]
+        else:
+            epe_step_completion[i] = None
+
     print("EPE step completion:", epe_step_completion)
 
     return results
