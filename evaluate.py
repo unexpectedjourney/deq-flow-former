@@ -339,7 +339,6 @@ def validate_sintel(model, mixed_precision=False, **kwargs):
         if np.mean(rho_list) != 0:
             print(f"Spectral radius ({dstype}): {np.mean(rho_list)}")
 
-    epe_step_completion = [np.mean(el) if len(el) else None for el in epe_step_completion]
     for i in range(len(epe_step_completion)):
         if flow_passed[i]:
             epe_step_completion[i] /= flow_passed[i]
